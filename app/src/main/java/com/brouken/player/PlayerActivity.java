@@ -1322,6 +1322,13 @@ public class PlayerActivity extends Activity {
             MediaItem.Builder mediaItemBuilder = new MediaItem.Builder()
                     .setUri(mPrefs.mediaUri)
                     .setMimeType(mPrefs.mediaType);
+            if (isLikelyCatchupUrl()) {
+                // Treat the appendable catch-up playlist as a live EVENT stream,
+                // but start at its beginning rather than jumping to its live edge.
+                mediaItemBuilder.setLiveConfiguration(new MediaItem.LiveConfiguration.Builder()
+                        .setTargetOffsetMs(7L * 24L * 60L * 60L * 1000L)
+                        .build());
+            }
             String title;
             if (apiTitle != null) {
                 title = apiTitle;
