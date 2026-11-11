@@ -1542,20 +1542,6 @@ public class PlayerActivity extends Activity {
         }
 
         @Override
-        public void onPlaybackStateChanged(int playbackState) {
-            if (playbackState == Player.STATE_ENDED && isLikelyCatchupUrl() && !catchupExtensionPending) {
-                long duration = player != null ? player.getDuration() : C.TIME_UNSET;
-                if (duration != C.TIME_UNSET && duration > 0) {
-                    catchupPreviousDuration = duration;
-                    catchupExtensionPending = true;
-                    scheduleCatchupExtensionRetry(3000L);
-                }
-            } else if (playbackState == Player.STATE_READY) {
-                checkCatchupExtensionAfterPrepare();
-            }
-        }
-
-        @Override
         public void onAudioSessionIdChanged(int audioSessionId) {
             try {
                 if (loudnessEnhancer != null) {
@@ -1607,6 +1593,17 @@ public class PlayerActivity extends Activity {
         @SuppressLint("SourceLockedOrientationActivity")
         @Override
         public void onPlaybackStateChanged(int state) {
+            if (state == Player.STATE_ENDED && isLikelyCatchupUrl() && !catchupExtensionPending) {
+                long endedDuration = player != null ? player.getDuration() : C.TIME_UNSET;
+                if (endedDuration != C.TIME_UNSET && endedDuration > 0) {
+                    catchupPreviousDuration = endedDuration;
+                    catchupExtensionPending = true;
+                    scheduleCatchupExtensionRetry(3000L);
+                }
+            } else if (state == Player.STATE_READY) {
+                checkCatchupExtensionAfterPrepare();
+            }
+
             boolean isNearEnd = false;
             final long duration = player.getDuration();
             if (duration != C.TIME_UNSET) {
