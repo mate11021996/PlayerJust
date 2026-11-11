@@ -35,6 +35,7 @@ import android.os.Parcelable;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.text.format.DateUtils;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Rational;
@@ -167,6 +168,19 @@ public class PlayerActivity extends Activity {
     private ProgressBar loadingProgressBar;
     private PlayerControlView controlView;
     private CustomDefaultTimeBar timeBar;
+    private TextView positionTimeView;
+    private TextView durationTimeView;
+
+    // Keep the elapsed clock and seek bar fresh while a catch-up stream is still live.
+    private final Runnable timelineRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            refreshTimelineUi();
+            if (player != null && player.isPlaying() && playerView != null) {
+                playerView.postDelayed(this, 500);
+            }
+        }
+    };
 
     private boolean restoreOrientationLock;
     private boolean restorePlayState;
@@ -339,6 +353,8 @@ public class PlayerActivity extends Activity {
         ((DoubleTapPlayerView)playerView).setDoubleTapEnabled(false);
 
         timeBar = playerView.findViewById(R.id.exo_progress);
+        positionTimeView = playerView.findViewById(R.id.exo_position);
+        durationTimeView = playerView.findViewById(R.id.exo_duration);
         timeBar.addListener(new TimeBar.OnScrubListener() {
             @Override
             public void onScrubStart(TimeBar timeBar, long position) {
@@ -1182,6 +1198,7 @@ public class PlayerActivity extends Activity {
         haveMedia = mPrefs.mediaUri != null;
 
         if (player != null) {
+            if (playerView != null) playerView.removeCallbacks(timelineRefreshRunnable);
             player.removeListener(playerListener);
             player.clearMediaItems();
             player.release();
@@ -1418,6 +1435,7 @@ public class PlayerActivity extends Activity {
             if (player.isPlaying() && restorePlayStateAllowed) {
                 restorePlayState = true;
             }
+            if (playerView != null) playerView.removeCallbacks(timelineRefreshRunnable);
             player.removeListener(playerListener);
             player.clearMediaItems();
             player.release();
@@ -1427,22 +1445,38 @@ public class PlayerActivity extends Activity {
         updateButtons(false);
     }
 
+    private void refreshTimelineUi() {
+        if (player == null || timeBar == null || isScrubbing) {
+            return;
+        }
+
+        long position = Math.max(0L, player.getCurrentPosition());
+        long duration = player.getDuration();
+        long bufferedPosition = Math.max(0L, player.getBufferedPosition());
+
+        // Keep elapsed time moving for live catch-up. Media3 timeline changes
+        // update the total duration as the HLS playlist grows.
+        if (positionTimeView != null) {
+            positionTimeView.setText(DateUtils.formatElapsedTime(position / 1000));
+        }
+
+        if (duration != C.TIME_UNSET && duration > 0) {
+            if (player.isCurrentMediaItemSeekable()) {
+                timeBar.setDuration(duration);
+                timeBar.setPosition(Math.min(position, duration));
+                timeBar.setBufferedPosition(Math.min(bufferedPosition, duration));
+            }
+            if (durationTimeView != null) {
+                durationTimeView.setText(DateUtils.formatElapsedTime(duration / 1000));
+            }
+        }
+    }
+
     private class PlayerListener implements Player.Listener {
-        // HLS EVENT playlists used by an active DVR recording can grow while playback
-        // is running. Media3 refreshes the timeline when the playlist is reloaded;
-        // explicitly forward that new finite duration to Just Player's existing time bar.
+        // Refresh when Media3 receives a new HLS/DASH timeline.
         @Override
         public void onTimelineChanged(Timeline timeline, int reason) {
-            if (player == null || timeBar == null || isScrubbing) {
-                return;
-            }
-
-            long duration = player.getDuration();
-            if (duration != C.TIME_UNSET && duration > 0 && player.isCurrentMediaItemSeekable()) {
-                timeBar.setDuration(duration);
-                timeBar.setPosition(Math.max(0L, player.getCurrentPosition()));
-                timeBar.setBufferedPosition(Math.max(0L, player.getBufferedPosition()));
-            }
+            refreshTimelineUi();
         }
 
         @Override
@@ -1461,6 +1495,11 @@ public class PlayerActivity extends Activity {
         @Override
         public void onIsPlayingChanged(boolean isPlaying) {
             playerView.setKeepScreenOn(isPlaying);
+            playerView.removeCallbacks(timelineRefreshRunnable);
+            if (isPlaying) {
+                refreshTimelineUi();
+                playerView.postDelayed(timelineRefreshRunnable, 500);
+            }
 
             if (Utils.isPiPSupported(PlayerActivity.this)) {
                 if (isPlaying) {
