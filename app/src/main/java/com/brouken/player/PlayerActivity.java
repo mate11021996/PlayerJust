@@ -182,6 +182,18 @@ public class PlayerActivity extends Activity {
         }
     };
 
+    // Automatically re-open a live catch-up URL at its previous end so the portal
+    // can return a longer archive while playback stays inside this app.
+    private boolean catchupExtensionPending;
+    private boolean catchupExtensionRetryScheduled;
+    private long catchupPreviousDuration = C.TIME_UNSET;
+    private final Runnable catchupExtensionRetry = new Runnable() {
+        @Override public void run() {
+            catchupExtensionRetryScheduled = false;
+            reloadCatchupForExtension();
+        }
+    };
+
     private boolean restoreOrientationLock;
     private boolean restorePlayState;
     private boolean restorePlayStateAllowed;
@@ -1197,8 +1209,16 @@ public class PlayerActivity extends Activity {
         boolean isNetworkUri = Utils.isSupportedNetworkUri(mPrefs.mediaUri);
         haveMedia = mPrefs.mediaUri != null;
 
+        catchupExtensionPending = false;
+        catchupExtensionRetryScheduled = false;
+        catchupPreviousDuration = C.TIME_UNSET;
+        if (playerView != null) playerView.removeCallbacks(catchupExtensionRetry);
         if (player != null) {
             if (playerView != null) playerView.removeCallbacks(timelineRefreshRunnable);
+            if (playerView != null) playerView.removeCallbacks(catchupExtensionRetry);
+            catchupExtensionPending = false;
+            catchupExtensionRetryScheduled = false;
+            catchupPreviousDuration = C.TIME_UNSET;
             player.removeListener(playerListener);
             player.clearMediaItems();
             player.release();
@@ -1445,6 +1465,48 @@ public class PlayerActivity extends Activity {
         updateButtons(false);
     }
 
+    private boolean isLikelyCatchupUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
+        String url = mPrefs.mediaUri.toString().toLowerCase(Locale.ROOT);
+        return url.contains("timeshift") || url.contains("catchup") || url.contains("catch-up")
+                || url.contains("archive") || url.contains("playback") || url.contains("utc=");
+    }
+
+    private void scheduleCatchupExtensionRetry(long delayMs) {
+        if (playerView == null || catchupExtensionRetryScheduled || !catchupExtensionPending) return;
+        catchupExtensionRetryScheduled = true;
+        playerView.removeCallbacks(catchupExtensionRetry);
+        playerView.postDelayed(catchupExtensionRetry, delayMs);
+    }
+
+    private void reloadCatchupForExtension() {
+        if (!catchupExtensionPending || player == null || !isLikelyCatchupUrl()) return;
+        MediaItem item = player.getCurrentMediaItem();
+        if (item == null) return;
+        // Re-request the same portal URL while paused. If its archive has grown,
+        // resume exactly at the old end; otherwise wait and try again.
+        player.setPlayWhenReady(false);
+        player.setMediaItem(item, 0L);
+        player.prepare();
+    }
+
+    private void checkCatchupExtensionAfterPrepare() {
+        if (!catchupExtensionPending || player == null || player.getPlaybackState() != Player.STATE_READY) return;
+        long newDuration = player.getDuration();
+        if (newDuration != C.TIME_UNSET && catchupPreviousDuration != C.TIME_UNSET
+                && newDuration > catchupPreviousDuration + 500L) {
+            long resumeAt = catchupPreviousDuration;
+            catchupExtensionPending = false;
+            catchupPreviousDuration = C.TIME_UNSET;
+            player.seekTo(resumeAt);
+            player.setPlayWhenReady(true);
+            refreshTimelineUi();
+        } else {
+            // No newer segments yet. Keep the player open and check the same URL again.
+            scheduleCatchupExtensionRetry(15000L);
+        }
+    }
+
     private void refreshTimelineUi() {
         if (player == null || timeBar == null || isScrubbing) {
             return;
@@ -1477,6 +1539,20 @@ public class PlayerActivity extends Activity {
         @Override
         public void onTimelineChanged(Timeline timeline, int reason) {
             refreshTimelineUi();
+        }
+
+        @Override
+        public void onPlaybackStateChanged(int playbackState) {
+            if (playbackState == Player.STATE_ENDED && isLikelyCatchupUrl() && !catchupExtensionPending) {
+                long duration = player != null ? player.getDuration() : C.TIME_UNSET;
+                if (duration != C.TIME_UNSET && duration > 0) {
+                    catchupPreviousDuration = duration;
+                    catchupExtensionPending = true;
+                    scheduleCatchupExtensionRetry(3000L);
+                }
+            } else if (playbackState == Player.STATE_READY) {
+                checkCatchupExtensionAfterPrepare();
+            }
         }
 
         @Override
