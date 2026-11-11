@@ -75,6 +75,7 @@ import androidx.media3.common.TrackGroup;
 import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
+import androidx.media3.common.Timeline;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlaybackException;
@@ -1427,6 +1428,23 @@ public class PlayerActivity extends Activity {
     }
 
     private class PlayerListener implements Player.Listener {
+        // HLS EVENT playlists used by an active DVR recording can grow while playback
+        // is running. Media3 refreshes the timeline when the playlist is reloaded;
+        // explicitly forward that new finite duration to Just Player's existing time bar.
+        @Override
+        public void onTimelineChanged(Timeline timeline, int reason) {
+            if (player == null || timeBar == null || isScrubbing) {
+                return;
+            }
+
+            long duration = player.getDuration();
+            if (duration != C.TIME_UNSET && duration > 0 && player.isCurrentMediaItemSeekable()) {
+                timeBar.setDuration(duration);
+                timeBar.setPosition(Math.max(0L, player.getCurrentPosition()));
+                timeBar.setBufferedPosition(Math.max(0L, player.getBufferedPosition()));
+            }
+        }
+
         @Override
         public void onAudioSessionIdChanged(int audioSessionId) {
             try {
