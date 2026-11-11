@@ -32,6 +32,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcelable;
+import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.text.TextUtils;
@@ -187,6 +188,9 @@ public class PlayerActivity extends Activity {
     private boolean catchupExtensionPending;
     private boolean catchupExtensionRetryScheduled;
     private long catchupPreviousDuration = C.TIME_UNSET;
+    // Project the catch-up archive end forward continuously from the first loaded duration.
+    private long catchupTimelineBaseDuration = C.TIME_UNSET;
+    private long catchupTimelineStartMs = C.TIME_UNSET;
     private final Runnable catchupExtensionRetry = new Runnable() {
         @Override public void run() {
             catchupExtensionRetryScheduled = false;
@@ -1212,6 +1216,8 @@ public class PlayerActivity extends Activity {
         catchupExtensionPending = false;
         catchupExtensionRetryScheduled = false;
         catchupPreviousDuration = C.TIME_UNSET;
+        catchupTimelineBaseDuration = C.TIME_UNSET;
+        catchupTimelineStartMs = C.TIME_UNSET;
         if (playerView != null) playerView.removeCallbacks(catchupExtensionRetry);
         if (player != null) {
             if (playerView != null) playerView.removeCallbacks(timelineRefreshRunnable);
@@ -1524,12 +1530,21 @@ public class PlayerActivity extends Activity {
 
         if (duration != C.TIME_UNSET && duration > 0) {
             if (player.isCurrentMediaItemSeekable()) {
+                // Keep the seek bar tied to the real Media3 duration so seeking never
+                // jumps beyond media that the portal has actually supplied.
                 timeBar.setDuration(duration);
                 timeBar.setPosition(Math.min(position, duration));
                 timeBar.setBufferedPosition(Math.min(bufferedPosition, duration));
             }
+
+            long displayedDuration = duration;
+            if (isLikelyCatchupUrl() && catchupTimelineBaseDuration > 0
+                    && catchupTimelineStartMs != C.TIME_UNSET) {
+                long archiveGrowth = Math.max(0L, SystemClock.elapsedRealtime() - catchupTimelineStartMs);
+                displayedDuration = Math.max(duration, catchupTimelineBaseDuration + archiveGrowth);
+            }
             if (durationTimeView != null) {
-                durationTimeView.setText(DateUtils.formatElapsedTime(duration / 1000));
+                durationTimeView.setText(DateUtils.formatElapsedTime(displayedDuration / 1000));
             }
         }
     }
@@ -1615,6 +1630,14 @@ public class PlayerActivity extends Activity {
             setEndControlsVisible(haveMedia && (state == Player.STATE_ENDED || isNearEnd));
 
             if (state == Player.STATE_READY) {
+                if (isLikelyCatchupUrl() && catchupTimelineBaseDuration == C.TIME_UNSET) {
+                    long initialDuration = player != null ? player.getDuration() : C.TIME_UNSET;
+                    if (initialDuration != C.TIME_UNSET && initialDuration > 0) {
+                        catchupTimelineBaseDuration = initialDuration;
+                        catchupTimelineStartMs = SystemClock.elapsedRealtime();
+                    }
+                }
+                refreshTimelineUi();
                 frameRendered = true;
 
                 if (videoLoading) {
