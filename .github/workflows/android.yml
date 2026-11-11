@@ -24,10 +24,12 @@ jobs:
         run: chmod +x gradlew
       - name: Build debug APK
         run: ./gradlew assembleDebug
-      - name: Upload debug APK
+      - name: List generated APKs
+        run: find app/build/outputs/apk -type f -name '*.apk' -print
+      - name: Upload debug APKs
         uses: actions/upload-artifact@v4
         with:
           name: Just-Player-DVR-debug
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 14
