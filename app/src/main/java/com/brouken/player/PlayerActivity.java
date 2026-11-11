@@ -172,7 +172,7 @@ public class PlayerActivity extends Activity {
     private TextView positionTimeView;
     private TextView durationTimeView;
 
-    // Keep the elapsed clock and seek bar fresh while a catch-up stream is still live.
+    // Keep the elapsed clock and seek bar fresh while Media3 receives HLS timeline updates.
     private final Runnable timelineRefreshRunnable = new Runnable() {
         @Override
         public void run() {
@@ -180,21 +180,6 @@ public class PlayerActivity extends Activity {
             if (player != null && player.isPlaying() && playerView != null) {
                 playerView.postDelayed(this, 500);
             }
-        }
-    };
-
-    // Automatically re-open a live catch-up URL at its previous end so the portal
-    // can return a longer archive while playback stays inside this app.
-    private boolean catchupExtensionPending;
-    private boolean catchupExtensionRetryScheduled;
-    private long catchupPreviousDuration = C.TIME_UNSET;
-    // Project the catch-up archive end forward continuously from the first loaded duration.
-    private long catchupTimelineBaseDuration = C.TIME_UNSET;
-    private long catchupTimelineStartMs = C.TIME_UNSET;
-    private final Runnable catchupExtensionRetry = new Runnable() {
-        @Override public void run() {
-            catchupExtensionRetryScheduled = false;
-            reloadCatchupForExtension();
         }
     };
 
@@ -1213,18 +1198,8 @@ public class PlayerActivity extends Activity {
         boolean isNetworkUri = Utils.isSupportedNetworkUri(mPrefs.mediaUri);
         haveMedia = mPrefs.mediaUri != null;
 
-        catchupExtensionPending = false;
-        catchupExtensionRetryScheduled = false;
-        catchupPreviousDuration = C.TIME_UNSET;
-        catchupTimelineBaseDuration = C.TIME_UNSET;
-        catchupTimelineStartMs = C.TIME_UNSET;
-        if (playerView != null) playerView.removeCallbacks(catchupExtensionRetry);
         if (player != null) {
             if (playerView != null) playerView.removeCallbacks(timelineRefreshRunnable);
-            if (playerView != null) playerView.removeCallbacks(catchupExtensionRetry);
-            catchupExtensionPending = false;
-            catchupExtensionRetryScheduled = false;
-            catchupPreviousDuration = C.TIME_UNSET;
             player.removeListener(playerListener);
             player.clearMediaItems();
             player.release();
@@ -1276,17 +1251,24 @@ public class PlayerActivity extends Activity {
                 .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this, extractorsFactory));
 
-        if (haveMedia && isNetworkUri) {
-            if (mPrefs.mediaUri.getScheme().toLowerCase().startsWith("http")) {
-                HashMap<String, String> headers = new HashMap<>();
-                String userInfo = mPrefs.mediaUri.getUserInfo();
-                if (userInfo != null && userInfo.length() > 0 && userInfo.contains(":")) {
-                    headers.put("Authorization", "Basic " + Base64.encodeToString(userInfo.getBytes(), Base64.NO_WRAP));
-                    DefaultHttpDataSource.Factory defaultHttpDataSourceFactory = new DefaultHttpDataSource.Factory();
-                    defaultHttpDataSourceFactory.setDefaultRequestProperties(headers);
-                    playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(defaultHttpDataSourceFactory, extractorsFactory));
-                }
+        if (haveMedia && isNetworkUri
+                && mPrefs.mediaUri.getScheme() != null
+                && mPrefs.mediaUri.getScheme().toLowerCase(Locale.ROOT).startsWith("http")) {
+            HashMap<String, String> headers = new HashMap<>();
+            String userInfo = mPrefs.mediaUri.getUserInfo();
+            if (userInfo != null && userInfo.length() > 0 && userInfo.contains(":")) {
+                headers.put("Authorization", "Basic " + Base64.encodeToString(userInfo.getBytes(), Base64.NO_WRAP));
             }
+            DefaultHttpDataSource.Factory httpDataSourceFactory = new DefaultHttpDataSource.Factory();
+            if (!headers.isEmpty()) {
+                httpDataSourceFactory.setDefaultRequestProperties(headers);
+            }
+            // For catch-up HLS only, strip a premature ENDLIST marker from the
+            // playlist response. Media3 will then poll the same URL and append
+            // newly published segments to the existing playback timeline.
+            playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
+                    new GrowingHlsDataSource.Factory(httpDataSourceFactory, isLikelyCatchupUrl()),
+                    extractorsFactory));
         }
 
         player = playerBuilder.build();
@@ -1478,41 +1460,6 @@ public class PlayerActivity extends Activity {
                 || url.contains("archive") || url.contains("playback") || url.contains("utc=");
     }
 
-    private void scheduleCatchupExtensionRetry(long delayMs) {
-        if (playerView == null || catchupExtensionRetryScheduled || !catchupExtensionPending) return;
-        catchupExtensionRetryScheduled = true;
-        playerView.removeCallbacks(catchupExtensionRetry);
-        playerView.postDelayed(catchupExtensionRetry, delayMs);
-    }
-
-    private void reloadCatchupForExtension() {
-        if (!catchupExtensionPending || player == null || !isLikelyCatchupUrl()) return;
-        MediaItem item = player.getCurrentMediaItem();
-        if (item == null) return;
-        // Re-request the same portal URL while paused. If its archive has grown,
-        // resume exactly at the old end; otherwise wait and try again.
-        player.setPlayWhenReady(false);
-        player.setMediaItem(item, 0L);
-        player.prepare();
-    }
-
-    private void checkCatchupExtensionAfterPrepare() {
-        if (!catchupExtensionPending || player == null || player.getPlaybackState() != Player.STATE_READY) return;
-        long newDuration = player.getDuration();
-        if (newDuration != C.TIME_UNSET && catchupPreviousDuration != C.TIME_UNSET
-                && newDuration > catchupPreviousDuration + 500L) {
-            long resumeAt = catchupPreviousDuration;
-            catchupExtensionPending = false;
-            catchupPreviousDuration = C.TIME_UNSET;
-            player.seekTo(resumeAt);
-            player.setPlayWhenReady(true);
-            refreshTimelineUi();
-        } else {
-            // No newer segments yet. Keep the player open and check the same URL again.
-            scheduleCatchupExtensionRetry(15000L);
-        }
-    }
-
     private void refreshTimelineUi() {
         if (player == null || timeBar == null || isScrubbing) {
             return;
@@ -1537,14 +1484,8 @@ public class PlayerActivity extends Activity {
                 timeBar.setBufferedPosition(Math.min(bufferedPosition, duration));
             }
 
-            long displayedDuration = duration;
-            if (isLikelyCatchupUrl() && catchupTimelineBaseDuration > 0
-                    && catchupTimelineStartMs != C.TIME_UNSET) {
-                long archiveGrowth = Math.max(0L, SystemClock.elapsedRealtime() - catchupTimelineStartMs);
-                displayedDuration = Math.max(duration, catchupTimelineBaseDuration + archiveGrowth);
-            }
             if (durationTimeView != null) {
-                durationTimeView.setText(DateUtils.formatElapsedTime(displayedDuration / 1000));
+                durationTimeView.setText(DateUtils.formatElapsedTime(duration / 1000));
             }
         }
     }
@@ -1608,17 +1549,6 @@ public class PlayerActivity extends Activity {
         @SuppressLint("SourceLockedOrientationActivity")
         @Override
         public void onPlaybackStateChanged(int state) {
-            if (state == Player.STATE_ENDED && isLikelyCatchupUrl() && !catchupExtensionPending) {
-                long endedDuration = player != null ? player.getDuration() : C.TIME_UNSET;
-                if (endedDuration != C.TIME_UNSET && endedDuration > 0) {
-                    catchupPreviousDuration = endedDuration;
-                    catchupExtensionPending = true;
-                    scheduleCatchupExtensionRetry(3000L);
-                }
-            } else if (state == Player.STATE_READY) {
-                checkCatchupExtensionAfterPrepare();
-            }
-
             boolean isNearEnd = false;
             final long duration = player.getDuration();
             if (duration != C.TIME_UNSET) {
@@ -1630,13 +1560,6 @@ public class PlayerActivity extends Activity {
             setEndControlsVisible(haveMedia && (state == Player.STATE_ENDED || isNearEnd));
 
             if (state == Player.STATE_READY) {
-                if (isLikelyCatchupUrl() && catchupTimelineBaseDuration == C.TIME_UNSET) {
-                    long initialDuration = player != null ? player.getDuration() : C.TIME_UNSET;
-                    if (initialDuration != C.TIME_UNSET && initialDuration > 0) {
-                        catchupTimelineBaseDuration = initialDuration;
-                        catchupTimelineStartMs = SystemClock.elapsedRealtime();
-                    }
-                }
                 refreshTimelineUi();
                 frameRendered = true;
 
