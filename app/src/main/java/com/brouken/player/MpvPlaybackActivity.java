@@ -70,7 +70,6 @@ public final class MpvPlaybackActivity extends Activity implements SurfaceHolder
         try {
             mpv = MPVLib.create(getApplicationContext());
             if (mpv == null) throw new IllegalStateException("MPV nije mogao stvoriti instancu");
-            mpv.requestLogMessages("warn");
             mpv.setOptionString("vo", "gpu");
             mpv.setOptionString("gpu-context", "android");
             mpv.setOptionString("hwdec", "mediacodec-copy");
