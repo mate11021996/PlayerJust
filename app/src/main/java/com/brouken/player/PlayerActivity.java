@@ -1486,16 +1486,45 @@ public class PlayerActivity extends Activity {
     }
 
     private boolean isLikelyCatchupUrl() {
-        if (mPrefs == null || mPrefs.mediaUri == null || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
-        String url = mPrefs.mediaUri.toString().toLowerCase(Locale.ROOT);
-        // Stalker Portal catch-up URLs commonly use an HLS path such as
-        // index-<unix-time>-<duration>.m3u8 with start, duration and real_id
-        // query parameters instead of an explicit "catchup" or "archive" label.
-        boolean stalkerCatchup = url.endsWith(".m3u8") || url.contains(".m3u8?")
-                ? url.contains("start=") && url.contains("duration=") && url.contains("real_id=")
-                : false;
-        return stalkerCatchup || url.contains("timeshift") || url.contains("catchup") || url.contains("catch-up")
-                || url.contains("archive") || url.contains("playback") || url.contains("utc=");
+        if (mPrefs == null || mPrefs.mediaUri == null
+                || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
+
+        Uri uri = mPrefs.mediaUri;
+        String url = uri.toString().toLowerCase(Locale.ROOT);
+        String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+
+        // Explicit catch-up URL/path markers used by Xtream and Stalker portals.
+        if (url.contains("timeshift") || url.contains("catchup")
+                || url.contains("catch-up") || url.contains("archive")
+                || url.contains("playback") || path.contains("/timeshift/")
+                || path.contains("/archive/")) {
+            return true;
+        }
+
+        // Stalker archive links are not consistent: depending on the portal,
+        // the archive parameters can be on the final HLS URL or embedded in
+        // the create_link command. Check decoded query values as well as keys.
+        String[] catchupKeys = {"start", "utc", "lutc", "duration",
+                "real_id", "archive", "timeshift", "catchup", "shift"};
+        for (String key : catchupKeys) {
+            if (uri.getQueryParameter(key) != null) return true;
+        }
+
+        String command = uri.getQueryParameter("cmd");
+        if (command != null) {
+            String decodedCommand = command.toLowerCase(Locale.ROOT);
+            if (decodedCommand.contains("timeshift") || decodedCommand.contains("archive")
+                    || decodedCommand.contains("catchup") || decodedCommand.contains("utc=")
+                    || decodedCommand.contains("lutc=") || decodedCommand.contains("start=")
+                    || decodedCommand.contains("duration=")) {
+                return true;
+            }
+        }
+
+        // Common Stalker HLS archive filenames include a start timestamp and
+        // duration even when the query string has no descriptive catch-up key.
+        String lastSegment = path.substring(path.lastIndexOf('/') + 1);
+        return lastSegment.matches(".*index[-_][0-9]{8,}[-_][0-9]+\\.m3u8");
     }
 
     /**
