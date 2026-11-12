@@ -1505,7 +1505,7 @@ public class PlayerActivity extends Activity {
         // the archive parameters can be on the final HLS URL or embedded in
         // the create_link command. Check decoded query values as well as keys.
         String[] catchupKeys = {"start", "utc", "lutc", "duration",
-                "real_id", "archive", "timeshift", "catchup", "shift"};
+                "archive", "timeshift", "catchup", "shift"};
         for (String key : catchupKeys) {
             if (uri.getQueryParameter(key) != null) return true;
         }
