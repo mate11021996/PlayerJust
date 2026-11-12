@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         def abiFilter = project.findProperty("abiFilter")
-        applicationId "com.brouken.player.dvr"
+        applicationId "com.brouken.player.dvr.video"
         minSdkVersion 24
         targetSdkVersion 36
         versionCode 220
@@ -23,7 +23,7 @@ android {
         }
     }
     base {
-        archivesName = "Just.Player.v${defaultConfig.versionName}"
+        archivesName = "Just.Video.Player.v${defaultConfig.versionName}"
     }
     buildTypes {
         release {
