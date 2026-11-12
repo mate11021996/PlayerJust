@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [master, dvr-growing-timeline]
+    branches: [master, dvr-growing-timeline, mpv-integration-test]
   pull_request:
     branches: [master]
   workflow_dispatch:
