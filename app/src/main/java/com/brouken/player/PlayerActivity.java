@@ -1267,7 +1267,8 @@ public class PlayerActivity extends Activity {
             // playlist response. Media3 will then poll the same URL and append
             // newly published segments to the existing playback timeline.
             playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
-                    new GrowingHlsDataSource.Factory(httpDataSourceFactory, isLikelyCatchupUrl()),
+                    new GrowingHlsDataSource.Factory(httpDataSourceFactory,
+                            isLikelyCatchupUrl(), isLikelyStalkerHlsUrl()),
                     extractorsFactory));
         }
 

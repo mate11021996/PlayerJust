@@ -26,26 +26,31 @@ import java.util.Map;
 final class GrowingHlsDataSource implements DataSource {
     private final DataSource upstream;
     private final boolean rewritePlaylists;
+    private final boolean detectStalkerCatchupPlaylist;
     private byte[] playlist;
     private int playlistPosition;
 
-    GrowingHlsDataSource(DataSource upstream, boolean rewritePlaylists) {
+    GrowingHlsDataSource(DataSource upstream, boolean rewritePlaylists, boolean detectStalkerCatchupPlaylist) {
         this.upstream = upstream;
         this.rewritePlaylists = rewritePlaylists;
+        this.detectStalkerCatchupPlaylist = detectStalkerCatchupPlaylist;
     }
 
     static final class Factory implements DataSource.Factory {
         private final DataSource.Factory upstreamFactory;
         private final boolean rewritePlaylists;
+        private final boolean detectStalkerCatchupPlaylist;
 
-        Factory(DataSource.Factory upstreamFactory, boolean rewritePlaylists) {
+        Factory(DataSource.Factory upstreamFactory, boolean rewritePlaylists,
+                boolean detectStalkerCatchupPlaylist) {
             this.upstreamFactory = upstreamFactory;
             this.rewritePlaylists = rewritePlaylists;
+            this.detectStalkerCatchupPlaylist = detectStalkerCatchupPlaylist;
         }
 
         @Override
         public DataSource createDataSource() {
-            return new GrowingHlsDataSource(upstreamFactory.createDataSource(), rewritePlaylists);
+            return new GrowingHlsDataSource(upstreamFactory.createDataSource(), rewritePlaylists, detectStalkerCatchupPlaylist);
         }
     }
 
@@ -103,16 +108,22 @@ final class GrowingHlsDataSource implements DataSource {
         if (!body.startsWith("#EXTM3U")) {
             playlist = output.toByteArray();
         } else {
-            // Catch-up URLs can be mislabeled as VOD even while the programme
-            // is still being broadcast. For recognized catch-up/Stalker HLS
-            // requests, convert that declaration to EVENT and remove ENDLIST
-            // so Media3 keeps refreshing the playlist for newly published
-            // segments. Ordinary VOD/live HLS outside this opt-in path is
-            // passed through unchanged.
-            String refreshed = body
-                    .replaceAll("(?m)^#EXT-X-PLAYLIST-TYPE:VOD[ \\t]*\\r?\\n?", "#EXT-X-PLAYLIST-TYPE:EVENT\\n")
-                    .replaceAll("(?m)^#EXT-X-ENDLIST[ \\t]*\\r?\\n?", "");
-            playlist = refreshed.getBytes(StandardCharsets.UTF_8);
+            // Some Stalker portals return catch-up HLS as a VOD playlist with
+            // ENDLIST even while the selected programme is still being aired.
+            // For Stalker URLs, opt in only when the playlist itself has both
+            // VOD and ENDLIST markers. Ordinary live playlists are passed
+            // through untouched, so their playback is not altered.
+            boolean stalkerCatchupPlaylist = detectStalkerCatchupPlaylist
+                    && body.contains("#EXT-X-PLAYLIST-TYPE:VOD")
+                    && body.contains("#EXT-X-ENDLIST");
+            if (!rewritePlaylists && !stalkerCatchupPlaylist) {
+                playlist = output.toByteArray();
+            } else {
+                String refreshed = body
+                        .replaceAll("(?m)^#EXT-X-PLAYLIST-TYPE:VOD[ \\t]*\\r?\\n?", "#EXT-X-PLAYLIST-TYPE:EVENT\\n")
+                        .replaceAll("(?m)^#EXT-X-ENDLIST[ \\t]*\\r?\\n?", "");
+                playlist = refreshed.getBytes(StandardCharsets.UTF_8);
+            }
         }
         return playlist.length;
     }
