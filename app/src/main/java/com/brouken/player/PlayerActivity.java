@@ -134,6 +134,7 @@ public class PlayerActivity extends Activity {
     public BrightnessControl mBrightnessControl;
     public static boolean haveMedia;
     private boolean videoLoading;
+    private boolean mpvFallbackLaunched;
     public static boolean controllerVisible;
     public static boolean controllerVisibleFully;
     public static Snackbar snackbar;
@@ -1701,6 +1702,31 @@ public class PlayerActivity extends Activity {
             if (error instanceof ExoPlaybackException) {
                 final ExoPlaybackException exoPlaybackException = (ExoPlaybackException) error;
                 if (exoPlaybackException.type == ExoPlaybackException.TYPE_SOURCE) {
+                    // Try the embedded libmpv engine once for network streams that
+                    // Media3 cannot open. Local files and unsupported Android versions
+                    // retain the original Media3 error behavior.
+                    if (!mpvFallbackLaunched && Build.VERSION.SDK_INT >= 26
+                            && mPrefs != null && mPrefs.mediaUri != null) {
+                        String scheme = mPrefs.mediaUri.getScheme();
+                        if ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme)
+                                || "rtsp".equalsIgnoreCase(scheme)) {
+                            mpvFallbackLaunched = true;
+                            Intent mpvIntent = new Intent(PlayerActivity.this, MpvPlaybackActivity.class);
+                            mpvIntent.putExtra(MpvPlaybackActivity.EXTRA_URI, mPrefs.mediaUri.toString());
+                            String userInfo = mPrefs.mediaUri.getUserInfo();
+                            if (userInfo != null && userInfo.contains(":")) {
+                                String auth = "Authorization: Basic " + Base64.encodeToString(
+                                        userInfo.getBytes(java.nio.charset.StandardCharsets.UTF_8), Base64.NO_WRAP);
+                                mpvIntent.putExtra(MpvPlaybackActivity.EXTRA_HEADERS, auth);
+                            }
+                            try {
+                                startActivity(mpvIntent);
+                                return;
+                            } catch (Exception ignored) {
+                                mpvFallbackLaunched = false;
+                            }
+                        }
+                    }
                     releasePlayer(false);
                     return;
                 }
