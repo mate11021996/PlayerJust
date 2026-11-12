@@ -1319,9 +1319,10 @@ public class PlayerActivity extends Activity {
             }
             updatebuttonAspectRatioIcon();
 
+            Uri playbackUri = getPlaybackUri();
             MediaItem.Builder mediaItemBuilder = new MediaItem.Builder()
-                    .setUri(mPrefs.mediaUri)
-                    .setMimeType(mPrefs.mediaType);
+                    .setUri(playbackUri)
+                    .setMimeType(isPhpTimeshiftUrl() ? MimeTypes.APPLICATION_M3U8 : mPrefs.mediaType);
             if (isLikelyCatchupUrl()) {
                 // Treat the appendable catch-up playlist as a live EVENT stream,
                 // but start at its beginning rather than jumping to its live edge.
@@ -1458,6 +1459,30 @@ public class PlayerActivity extends Activity {
         }
         titleView.setVisibility(View.GONE);
         updateButtons(false);
+    }
+
+    /**
+     * Xtream-compatible panels can expose the PHP timeshift endpoint in HLS
+     * mode by adding extension=m3u8. Keep the original saved URI untouched;
+     * apply this only to the URI used for playback of that exact endpoint.
+     */
+    private boolean isPhpTimeshiftUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null) return false;
+        String path = mPrefs.mediaUri.getPath();
+        return path != null && path.toLowerCase(Locale.ROOT).endsWith("/timeshift.php")
+                && mPrefs.mediaUri.getQueryParameter("username") != null
+                && mPrefs.mediaUri.getQueryParameter("password") != null
+                && mPrefs.mediaUri.getQueryParameter("stream") != null
+                && mPrefs.mediaUri.getQueryParameter("start") != null
+                && mPrefs.mediaUri.getQueryParameter("duration") != null;
+    }
+
+    private Uri getPlaybackUri() {
+        Uri original = mPrefs.mediaUri;
+        if (!isPhpTimeshiftUrl()) return original;
+        String extension = original.getQueryParameter("extension");
+        if (extension != null && !extension.isEmpty()) return original;
+        return original.buildUpon().appendQueryParameter("extension", "m3u8").build();
     }
 
     private boolean isLikelyCatchupUrl() {
