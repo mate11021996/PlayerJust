@@ -9,3 +9,5 @@ This branch adds a secondary in-process libmpv playback activity. The existing M
 - Android 8.0+ is required by the libmpv AAR. The existing app minimum SDK remains unchanged; older devices retain the Media3 behavior.
 
 This is an experimental integration branch. Validate native library packaging, build variants, and playback on physical devices before merging into the stable branch. The bundled libmpv/FFmpeg binaries carry GPL-3.0-or-later obligations; review and ship the corresponding license/source notices before distribution.
+
+Build verification: Android CI is configured for this branch.
