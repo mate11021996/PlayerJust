@@ -2,7 +2,7 @@ name: Android CI
 
 on:
   push:
-    branches: [master, dvr-growing-timeline]
+    branches: [master, dvr-growing-timeline, just-player-original]
   pull_request:
     branches: [master]
   workflow_dispatch:
@@ -29,7 +29,7 @@ jobs:
       - name: Upload debug APKs
         uses: actions/upload-artifact@v4
         with:
-          name: Just-Player-DVR-debug
+          name: Just-Player-original-debug
           path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 14
