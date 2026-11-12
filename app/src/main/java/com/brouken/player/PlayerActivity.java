@@ -1267,7 +1267,7 @@ public class PlayerActivity extends Activity {
             // playlist response. Media3 will then poll the same URL and append
             // newly published segments to the existing playback timeline.
             playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
-                    new GrowingHlsDataSource.Factory(httpDataSourceFactory, isLikelyCatchupUrl()),
+                    new GrowingHlsDataSource.Factory(httpDataSourceFactory, isLikelyCatchupUrl() || isLikelyStalkerHlsUrl()),
                     extractorsFactory));
         }
 
@@ -1496,6 +1496,31 @@ public class PlayerActivity extends Activity {
                 : false;
         return stalkerCatchup || url.contains("timeshift") || url.contains("catchup") || url.contains("catch-up")
                 || url.contains("archive") || url.contains("playback") || url.contains("utc=");
+    }
+
+    /**
+     * Recognize Stalker Portal HLS links even when the provider does not use
+     * obvious catch-up/archive words in the URL. This covers common MAC/STB,
+     * create_link, live.php, timeshift.php and extension=m3u8 variants.
+     * The data source still verifies that the response is an HLS playlist
+     * before touching its contents.
+     */
+    private boolean isLikelyStalkerHlsUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null
+                || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
+        Uri uri = mPrefs.mediaUri;
+        String url = uri.toString().toLowerCase(Locale.ROOT);
+        String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+        return path.contains("stalker_portal")
+                || path.endsWith("/play/live.php")
+                || path.endsWith("/play/timeshift.php")
+                || path.endsWith("/timeshift.php")
+                || "m3u8".equalsIgnoreCase(uri.getQueryParameter("extension"))
+                || uri.getQueryParameter("mac") != null
+                || uri.getQueryParameter("stb") != null
+                || (uri.getQueryParameter("type") != null
+                    && uri.getQueryParameter("action") != null)
+                || url.contains("real_id=");
     }
 
     private void refreshTimelineUi() {

@@ -63,12 +63,9 @@ final class GrowingHlsDataSource implements DataSource {
         String path = uri == null ? null : uri.getPath();
         boolean isM3u8Path = path != null
                 && path.toLowerCase(java.util.Locale.ROOT).endsWith(".m3u8");
-        // Some providers expose an HLS media playlist through a PHP timeshift
-        // endpoint instead of a .m3u8 URL. Only buffer that endpoint when its
-        // response MIME type identifies an HLS playlist; never buffer a
-        // potentially long MPEG-TS response from timeshift.php.
-        boolean isTimeshiftPhp = path != null
-                && path.toLowerCase(java.util.Locale.ROOT).endsWith("/timeshift.php");
+        // Stalker portals and Xtream-compatible panels may expose HLS through
+        // PHP endpoints (live.php/timeshift.php) instead of a .m3u8 path.
+        // Detect those by MIME type, so MPEG-TS responses are never buffered.
         boolean isHlsMimeType = false;
         Map<String, List<String>> responseHeaders = upstream.getResponseHeaders();
         if (responseHeaders != null) {
@@ -87,7 +84,9 @@ final class GrowingHlsDataSource implements DataSource {
                 }
             }
         }
-        boolean isPlaylist = isM3u8Path || (isTimeshiftPhp && isHlsMimeType);
+        // The MIME check also covers PHP endpoints and unusual HLS URL shapes.
+        // MPEG-TS segments and ordinary video responses do not match it.
+        boolean isPlaylist = isM3u8Path || isHlsMimeType;
         if (!rewritePlaylists || !isPlaylist) {
             return upstreamLength;
         }
@@ -101,12 +100,18 @@ final class GrowingHlsDataSource implements DataSource {
         }
 
         String body = new String(output.toByteArray(), StandardCharsets.UTF_8);
-        if (!body.startsWith("#EXTM3U") || !body.contains("#EXT-X-ENDLIST")) {
+        if (!body.startsWith("#EXTM3U")) {
             playlist = output.toByteArray();
         } else {
-            // Remove only the ENDLIST tag. Keep EVENT, media sequence, segment
-            // URIs, durations and all authentication query parameters intact.
-            String refreshed = body.replaceAll("(?m)^#EXT-X-ENDLIST[ \\t]*\\r?\\n?", "");
+            // Catch-up URLs can be mislabeled as VOD even while the programme
+            // is still being broadcast. For recognized catch-up/Stalker HLS
+            // requests, convert that declaration to EVENT and remove ENDLIST
+            // so Media3 keeps refreshing the playlist for newly published
+            // segments. Ordinary VOD/live HLS outside this opt-in path is
+            // passed through unchanged.
+            String refreshed = body
+                    .replaceAll("(?m)^#EXT-X-PLAYLIST-TYPE:VOD[ \\t]*\\r?\\n?", "#EXT-X-PLAYLIST-TYPE:EVENT\\n")
+                    .replaceAll("(?m)^#EXT-X-ENDLIST[ \\t]*\\r?\\n?", "");
             playlist = refreshed.getBytes(StandardCharsets.UTF_8);
         }
         return playlist.length;
