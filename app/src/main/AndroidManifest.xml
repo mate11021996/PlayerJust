@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-sdk tools:overrideLibrary="dev.jdtech.mpv" />
+
     <uses-feature
         android:name="android.software.leanback"
         android:required="false" />
@@ -692,6 +694,7 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+        <activity android:name=".MpvPlaybackActivity" android:exported="false" android:configChanges="orientation|screenSize|keyboardHidden" />
         <activity
             android:name=".MediaStoreChooserActivity"
             android:configChanges="orientation"
