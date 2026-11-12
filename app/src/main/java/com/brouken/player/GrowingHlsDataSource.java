@@ -61,7 +61,33 @@ final class GrowingHlsDataSource implements DataSource {
         long upstreamLength = upstream.open(dataSpec);
         Uri uri = dataSpec.uri;
         String path = uri == null ? null : uri.getPath();
-        boolean isPlaylist = path != null && path.toLowerCase(java.util.Locale.ROOT).endsWith(".m3u8");
+        boolean isM3u8Path = path != null
+                && path.toLowerCase(java.util.Locale.ROOT).endsWith(".m3u8");
+        // Some providers expose an HLS media playlist through a PHP timeshift
+        // endpoint instead of a .m3u8 URL. Only buffer that endpoint when its
+        // response MIME type identifies an HLS playlist; never buffer a
+        // potentially long MPEG-TS response from timeshift.php.
+        boolean isTimeshiftPhp = path != null
+                && path.toLowerCase(java.util.Locale.ROOT).endsWith("/timeshift.php");
+        boolean isHlsMimeType = false;
+        Map<String, List<String>> responseHeaders = upstream.getResponseHeaders();
+        if (responseHeaders != null) {
+            for (Map.Entry<String, List<String>> entry : responseHeaders.entrySet()) {
+                if (entry.getKey() != null && "content-type".equalsIgnoreCase(entry.getKey())
+                        && entry.getValue() != null) {
+                    for (String value : entry.getValue()) {
+                        if (value != null) {
+                            String mime = value.toLowerCase(java.util.Locale.ROOT);
+                            if (mime.contains("mpegurl") || mime.contains("m3u")) {
+                                isHlsMimeType = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        boolean isPlaylist = isM3u8Path || (isTimeshiftPhp && isHlsMimeType);
         if (!rewritePlaylists || !isPlaylist) {
             return upstreamLength;
         }
