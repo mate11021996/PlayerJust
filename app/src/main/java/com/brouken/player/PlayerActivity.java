@@ -1463,7 +1463,13 @@ public class PlayerActivity extends Activity {
     private boolean isLikelyCatchupUrl() {
         if (mPrefs == null || mPrefs.mediaUri == null || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
         String url = mPrefs.mediaUri.toString().toLowerCase(Locale.ROOT);
-        return url.contains("timeshift") || url.contains("catchup") || url.contains("catch-up")
+        // Stalker Portal catch-up URLs commonly use an HLS path such as
+        // index-<unix-time>-<duration>.m3u8 with start, duration and real_id
+        // query parameters instead of an explicit "catchup" or "archive" label.
+        boolean stalkerCatchup = url.endsWith(".m3u8") || url.contains(".m3u8?")
+                ? url.contains("start=") && url.contains("duration=") && url.contains("real_id=")
+                : false;
+        return stalkerCatchup || url.contains("timeshift") || url.contains("catchup") || url.contains("catch-up")
                 || url.contains("archive") || url.contains("playback") || url.contains("utc=");
     }
 
