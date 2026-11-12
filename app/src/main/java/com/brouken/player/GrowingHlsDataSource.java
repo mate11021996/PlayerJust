@@ -92,7 +92,7 @@ final class GrowingHlsDataSource implements DataSource {
         // The MIME check also covers PHP endpoints and unusual HLS URL shapes.
         // MPEG-TS segments and ordinary video responses do not match it.
         boolean isPlaylist = isM3u8Path || isHlsMimeType;
-        if (!rewritePlaylists || !isPlaylist) {
+        if (!isPlaylist || (!rewritePlaylists && !detectStalkerCatchupPlaylist)) {
             return upstreamLength;
         }
 
