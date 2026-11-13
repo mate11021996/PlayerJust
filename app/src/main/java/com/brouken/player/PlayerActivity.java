@@ -388,10 +388,12 @@ public class PlayerActivity extends Activity {
                 playerView.setCustomErrorMessage(null);
                 isScrubbing = false;
                 if (player != null) {
-                    // Exit optimized scrubbing mode only after the final
-                    // timeline position has been submitted.
-                    player.seekTo(position);
+                    // Scrubbing mode is only for previewing frames while the
+                    // user moves the thumb. Finish the gesture in normal playback
+                    // mode so the final seek uses the regular decoder pipeline.
                     player.setScrubbingModeEnabled(false);
+                    player.setSeekParameters(SeekParameters.DEFAULT);
+                    player.seekTo(position);
                 }
                 if (restorePlayState) {
                     restorePlayState = false;
