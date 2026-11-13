@@ -32,9 +32,11 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcelable;
+import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
 import android.text.TextUtils;
+import android.text.format.DateUtils;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Rational;
@@ -75,6 +77,7 @@ import androidx.media3.common.TrackGroup;
 import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
+import androidx.media3.common.Timeline;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlaybackException;
@@ -166,6 +169,19 @@ public class PlayerActivity extends Activity {
     private ProgressBar loadingProgressBar;
     private PlayerControlView controlView;
     private CustomDefaultTimeBar timeBar;
+    private TextView positionTimeView;
+    private TextView durationTimeView;
+
+    // Keep the elapsed clock and seek bar fresh while Media3 receives HLS timeline updates.
+    private final Runnable timelineRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            refreshTimelineUi();
+            if (player != null && player.isPlaying() && playerView != null) {
+                playerView.postDelayed(this, 500);
+            }
+        }
+    };
 
     private boolean restoreOrientationLock;
     private boolean restorePlayState;
@@ -338,6 +354,8 @@ public class PlayerActivity extends Activity {
         ((DoubleTapPlayerView)playerView).setDoubleTapEnabled(false);
 
         timeBar = playerView.findViewById(R.id.exo_progress);
+        positionTimeView = playerView.findViewById(R.id.exo_position);
+        durationTimeView = playerView.findViewById(R.id.exo_duration);
         timeBar.addListener(new TimeBar.OnScrubListener() {
             @Override
             public void onScrubStart(TimeBar timeBar, long position) {
@@ -350,10 +368,13 @@ public class PlayerActivity extends Activity {
                 }
                 scrubbingNoticeable = false;
                 isScrubbing = true;
-                frameRendered = true;
+                // Avoid seeking the network stream while the thumb is moving.
+                // Repeated HLS seeks can flush/restart the video decoder and leave
+                // audio running normally while video catches up unevenly.
+                frameRendered = false;
                 playerView.setControllerShowTimeoutMs(-1);
                 scrubbingStart = player.getCurrentPosition();
-                player.setSeekParameters(SeekParameters.CLOSEST_SYNC);
+                player.setSeekParameters(SeekParameters.DEFAULT);
                 reportScrubbing(position);
             }
 
@@ -366,6 +387,14 @@ public class PlayerActivity extends Activity {
             public void onScrubStop(TimeBar timeBar, long position, boolean canceled) {
                 playerView.setCustomErrorMessage(null);
                 isScrubbing = false;
+                if (player != null) {
+                    // Perform one seek after the user releases the thumb.
+                    // Land on the nearest keyframe so the video decoder does
+                    // not have to catch up from a distant earlier frame.
+                    player.setSeekParameters(SeekParameters.CLOSEST_SYNC);
+                    player.seekTo(position);
+                    player.setSeekParameters(SeekParameters.DEFAULT);
+                }
                 if (restorePlayState) {
                     restorePlayState = false;
                     playerView.setControllerShowTimeoutMs(PlayerActivity.CONTROLLER_TIMEOUT);
@@ -865,10 +894,24 @@ public class PlayerActivity extends Activity {
                     return true;
                 }
                 break;
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                // Button Mapper's "Previous Track" action always returns to the
+                // beginning of the current video. Keep it separate from Rewind.
+                if (player != null) {
+                    playerView.removeCallbacks(playerView.textClearRunnable);
+                    playerView.keySeekStart = -1;
+                    player.setSeekParameters(SeekParameters.EXACT);
+                    player.seekTo(0);
+                    playerView.setCustomErrorMessage("00:00");
+                    return true;
+                }
+                break;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_BUTTON_L2:
             case KeyEvent.KEYCODE_MEDIA_REWIND:
-                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) {
+            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
+                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND ||
+                        keyCode == KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD) {
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
@@ -889,7 +932,10 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_RIGHT:
             case KeyEvent.KEYCODE_BUTTON_R2:
             case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
-                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
+                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD ||
+                        keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD) {
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
@@ -940,9 +986,13 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_BUTTON_L2:
             case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
             case KeyEvent.KEYCODE_DPAD_RIGHT:
             case KeyEvent.KEYCODE_BUTTON_R2:
             case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
                 if (!isScrubbing) {
                     playerView.postDelayed(playerView.textClearRunnable, 1000);
                 }
@@ -980,11 +1030,32 @@ public class PlayerActivity extends Activity {
             return true;
         }
 
+        // Handle media transport keys before child views / Media3 controls can consume them.
+        // This also makes Button Remapper's Previous/Next Track actions work with the controller visible.
+        final int keyCode = event.getKeyCode();
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    onKeyDown(keyCode, event);
+                } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                    onKeyUp(keyCode, event);
+                }
+                return true;
+        }
+
         if (isTvBox && !controllerVisibleFully) {
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                onKeyDown(event.getKeyCode(), event);
+                onKeyDown(keyCode, event);
             } else if (event.getAction() == KeyEvent.ACTION_UP) {
-                onKeyUp(event.getKeyCode(), event);
+                onKeyUp(keyCode, event);
             }
             return true;
         } else {
@@ -1181,6 +1252,7 @@ public class PlayerActivity extends Activity {
         haveMedia = mPrefs.mediaUri != null;
 
         if (player != null) {
+            if (playerView != null) playerView.removeCallbacks(timelineRefreshRunnable);
             player.removeListener(playerListener);
             player.clearMediaItems();
             player.release();
@@ -1226,23 +1298,34 @@ public class PlayerActivity extends Activity {
                 .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE);
         MediaCodecUtil.setMapDV7ToHevc(mPrefs.mapDV7ToHevc);
         @SuppressLint("WrongConstant") RenderersFactory renderersFactory = new DefaultRenderersFactory(this)
+                // If the preferred hardware codec cannot initialize or recover,
+                // allow Media3 to try another compatible decoder.
+                .setEnableDecoderFallback(true)
                 .setExtensionRendererMode(mPrefs.decoderPriority);
 
         ExoPlayer.Builder playerBuilder = new ExoPlayer.Builder(this, renderersFactory)
                 .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this, extractorsFactory));
 
-        if (haveMedia && isNetworkUri) {
-            if (mPrefs.mediaUri.getScheme().toLowerCase().startsWith("http")) {
-                HashMap<String, String> headers = new HashMap<>();
-                String userInfo = mPrefs.mediaUri.getUserInfo();
-                if (userInfo != null && userInfo.length() > 0 && userInfo.contains(":")) {
-                    headers.put("Authorization", "Basic " + Base64.encodeToString(userInfo.getBytes(), Base64.NO_WRAP));
-                    DefaultHttpDataSource.Factory defaultHttpDataSourceFactory = new DefaultHttpDataSource.Factory();
-                    defaultHttpDataSourceFactory.setDefaultRequestProperties(headers);
-                    playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(defaultHttpDataSourceFactory, extractorsFactory));
-                }
+        if (haveMedia && isNetworkUri
+                && mPrefs.mediaUri.getScheme() != null
+                && mPrefs.mediaUri.getScheme().toLowerCase(Locale.ROOT).startsWith("http")) {
+            HashMap<String, String> headers = new HashMap<>();
+            String userInfo = mPrefs.mediaUri.getUserInfo();
+            if (userInfo != null && userInfo.length() > 0 && userInfo.contains(":")) {
+                headers.put("Authorization", "Basic " + Base64.encodeToString(userInfo.getBytes(), Base64.NO_WRAP));
             }
+            DefaultHttpDataSource.Factory httpDataSourceFactory = new DefaultHttpDataSource.Factory();
+            if (!headers.isEmpty()) {
+                httpDataSourceFactory.setDefaultRequestProperties(headers);
+            }
+            // For catch-up HLS only, strip a premature ENDLIST marker from the
+            // playlist response. Media3 will then poll the same URL and append
+            // newly published segments to the existing playback timeline.
+            playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
+                    new GrowingHlsDataSource.Factory(httpDataSourceFactory,
+                            isLikelyCatchupUrl(), isLikelyStalkerHlsUrl()),
+                    extractorsFactory));
         }
 
         player = playerBuilder.build();
@@ -1266,7 +1349,41 @@ public class PlayerActivity extends Activity {
 
         if (player.canAdvertiseSession()) {
             try {
-                mediaSession = new MediaSession.Builder(this, player).build();
+                mediaSession = new MediaSession.Builder(this, player)
+                        .setCallback(new MediaSession.Callback() {
+                            @Override
+                            public boolean onMediaButtonEvent(@NonNull MediaSession session,
+                                                              @NonNull MediaSession.ControllerInfo controller,
+                                                              @NonNull Intent intent) {
+                                // Button remappers may deliver transport buttons through the
+                                // MediaSession media-button intent instead of Activity key events.
+                                if (Intent.ACTION_MEDIA_BUTTON.equals(intent.getAction())) {
+                                    final KeyEvent keyEvent = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+                                    if (keyEvent != null) {
+                                        final int keyCode = keyEvent.getKeyCode();
+                                        switch (keyCode) {
+                                            case KeyEvent.KEYCODE_MEDIA_REWIND:
+                                            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                                            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
+                                            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+                                            case KeyEvent.KEYCODE_MEDIA_NEXT:
+                                            case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
+                                            case KeyEvent.KEYCODE_MEDIA_PLAY:
+                                            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+                                            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                                                if (keyEvent.getAction() == KeyEvent.ACTION_DOWN) {
+                                                    PlayerActivity.this.onKeyDown(keyCode, keyEvent);
+                                                } else if (keyEvent.getAction() == KeyEvent.ACTION_UP) {
+                                                    PlayerActivity.this.onKeyUp(keyCode, keyEvent);
+                                                }
+                                                return true;
+                                        }
+                                    }
+                                }
+                                return false;
+                            }
+                        })
+                        .build();
             } catch (IllegalStateException e) {
                 e.printStackTrace();
             }
@@ -1293,9 +1410,17 @@ public class PlayerActivity extends Activity {
             }
             updatebuttonAspectRatioIcon();
 
+            Uri playbackUri = getPlaybackUri();
             MediaItem.Builder mediaItemBuilder = new MediaItem.Builder()
-                    .setUri(mPrefs.mediaUri)
-                    .setMimeType(mPrefs.mediaType);
+                    .setUri(playbackUri)
+                    .setMimeType(isPhpTimeshiftUrl() ? MimeTypes.APPLICATION_M3U8 : mPrefs.mediaType);
+            if (isLikelyCatchupUrl()) {
+                // Treat the appendable catch-up playlist as a live EVENT stream,
+                // but start at its beginning rather than jumping to its live edge.
+                mediaItemBuilder.setLiveConfiguration(new MediaItem.LiveConfiguration.Builder()
+                        .setTargetOffsetMs(7L * 24L * 60L * 60L * 1000L)
+                        .build());
+            }
             String title;
             if (apiTitle != null) {
                 title = apiTitle;
@@ -1417,6 +1542,7 @@ public class PlayerActivity extends Activity {
             if (player.isPlaying() && restorePlayStateAllowed) {
                 restorePlayState = true;
             }
+            if (playerView != null) playerView.removeCallbacks(timelineRefreshRunnable);
             player.removeListener(playerListener);
             player.clearMediaItems();
             player.release();
@@ -1426,7 +1552,134 @@ public class PlayerActivity extends Activity {
         updateButtons(false);
     }
 
+    /**
+     * Xtream-compatible panels can expose the PHP timeshift endpoint in HLS
+     * mode by adding extension=m3u8. Keep the original saved URI untouched;
+     * apply this only to the URI used for playback of that exact endpoint.
+     */
+    private boolean isPhpTimeshiftUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null) return false;
+        String path = mPrefs.mediaUri.getPath();
+        return path != null && path.toLowerCase(Locale.ROOT).endsWith("/timeshift.php")
+                && mPrefs.mediaUri.getQueryParameter("username") != null
+                && mPrefs.mediaUri.getQueryParameter("password") != null
+                && mPrefs.mediaUri.getQueryParameter("stream") != null
+                && mPrefs.mediaUri.getQueryParameter("start") != null
+                && mPrefs.mediaUri.getQueryParameter("duration") != null;
+    }
+
+    private Uri getPlaybackUri() {
+        Uri original = mPrefs.mediaUri;
+        if (!isPhpTimeshiftUrl()) return original;
+        String extension = original.getQueryParameter("extension");
+        if (extension != null && !extension.isEmpty()) return original;
+        return original.buildUpon().appendQueryParameter("extension", "m3u8").build();
+    }
+
+    private boolean isLikelyCatchupUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null
+                || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
+
+        Uri uri = mPrefs.mediaUri;
+        String url = uri.toString().toLowerCase(Locale.ROOT);
+        String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+
+        // Explicit catch-up URL/path markers used by Xtream and Stalker portals.
+        if (url.contains("timeshift") || url.contains("catchup")
+                || url.contains("catch-up") || url.contains("archive")
+                || url.contains("playback") || path.contains("/timeshift/")
+                || path.contains("/archive/")) {
+            return true;
+        }
+
+        // Stalker archive links are not consistent: depending on the portal,
+        // the archive parameters can be on the final HLS URL or embedded in
+        // the create_link command. Check decoded query values as well as keys.
+        String[] catchupKeys = {"start", "utc", "lutc", "duration",
+                "archive", "timeshift", "catchup", "shift"};
+        for (String key : catchupKeys) {
+            if (uri.getQueryParameter(key) != null) return true;
+        }
+
+        String command = uri.getQueryParameter("cmd");
+        if (command != null) {
+            String decodedCommand = command.toLowerCase(Locale.ROOT);
+            if (decodedCommand.contains("timeshift") || decodedCommand.contains("archive")
+                    || decodedCommand.contains("catchup") || decodedCommand.contains("utc=")
+                    || decodedCommand.contains("lutc=") || decodedCommand.contains("start=")
+                    || decodedCommand.contains("duration=")) {
+                return true;
+            }
+        }
+
+        // Common Stalker HLS archive filenames include a start timestamp and
+        // duration even when the query string has no descriptive catch-up key.
+        String lastSegment = path.substring(path.lastIndexOf('/') + 1);
+        return lastSegment.matches(".*index[-_][0-9]{8,}[-_][0-9]+\\.m3u8");
+    }
+
+    /**
+     * Recognize Stalker Portal HLS links even when the provider does not use
+     * obvious catch-up/archive words in the URL. This covers common MAC/STB,
+     * create_link, live.php, timeshift.php and extension=m3u8 variants.
+     * The data source still verifies that the response is an HLS playlist
+     * before touching its contents.
+     */
+    private boolean isLikelyStalkerHlsUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null
+                || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
+        Uri uri = mPrefs.mediaUri;
+        String url = uri.toString().toLowerCase(Locale.ROOT);
+        String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+        return path.contains("stalker_portal")
+                || path.endsWith("/play/live.php")
+                || path.endsWith("/play/timeshift.php")
+                || path.endsWith("/timeshift.php")
+                || "m3u8".equalsIgnoreCase(uri.getQueryParameter("extension"))
+                || uri.getQueryParameter("mac") != null
+                || uri.getQueryParameter("stb") != null
+                || (uri.getQueryParameter("type") != null
+                    && uri.getQueryParameter("action") != null)
+                || url.contains("real_id=");
+    }
+
+    private void refreshTimelineUi() {
+        if (player == null || timeBar == null || isScrubbing) {
+            return;
+        }
+
+        long position = Math.max(0L, player.getCurrentPosition());
+        long duration = player.getDuration();
+        long bufferedPosition = Math.max(0L, player.getBufferedPosition());
+
+        // Keep elapsed time moving for live catch-up. Media3 timeline changes
+        // update the total duration as the HLS playlist grows.
+        if (positionTimeView != null) {
+            positionTimeView.setText(DateUtils.formatElapsedTime(position / 1000));
+        }
+
+        if (duration != C.TIME_UNSET && duration > 0) {
+            if (player.isCurrentMediaItemSeekable()) {
+                // Keep the seek bar tied to the real Media3 duration so seeking never
+                // jumps beyond media that the portal has actually supplied.
+                timeBar.setDuration(duration);
+                timeBar.setPosition(Math.min(position, duration));
+                timeBar.setBufferedPosition(Math.min(bufferedPosition, duration));
+            }
+
+            if (durationTimeView != null) {
+                durationTimeView.setText(DateUtils.formatElapsedTime(duration / 1000));
+            }
+        }
+    }
+
     private class PlayerListener implements Player.Listener {
+        // Refresh when Media3 receives a new HLS/DASH timeline.
+        @Override
+        public void onTimelineChanged(Timeline timeline, int reason) {
+            refreshTimelineUi();
+        }
+
         @Override
         public void onAudioSessionIdChanged(int audioSessionId) {
             try {
@@ -1443,6 +1696,11 @@ public class PlayerActivity extends Activity {
         @Override
         public void onIsPlayingChanged(boolean isPlaying) {
             playerView.setKeepScreenOn(isPlaying);
+            playerView.removeCallbacks(timelineRefreshRunnable);
+            if (isPlaying) {
+                refreshTimelineUi();
+                playerView.postDelayed(timelineRefreshRunnable, 500);
+            }
 
             if (Utils.isPiPSupported(PlayerActivity.this)) {
                 if (isPlaying) {
@@ -1485,6 +1743,7 @@ public class PlayerActivity extends Activity {
             setEndControlsVisible(haveMedia && (state == Player.STATE_ENDED || isNearEnd));
 
             if (state == Player.STATE_READY) {
+                refreshTimelineUi();
                 frameRendered = true;
 
                 if (videoLoading) {
@@ -1941,12 +2200,8 @@ public class PlayerActivity extends Activity {
             playerView.clearIcon();
             playerView.setCustomErrorMessage(Utils.formatMilisSign(diff));
         }
-        if (frameRendered) {
-            frameRendered = false;
-            if (player != null) {
-                player.seekTo(position);
-            }
-        }
+        // Seeking is intentionally deferred until onScrubStop. A rapid
+        // drag therefore produces one decoder reposition instead of many.
     }
 
     void updateSubtitleStyle(final Context context) {

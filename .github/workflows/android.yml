@@ -2,9 +2,10 @@ name: Android CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, dvr-growing-timeline, just-player-original]
   pull_request:
     branches: [master]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,5 +22,14 @@ jobs:
           java-version: 21
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
-      - name: Build with Gradle
-        run: ./gradlew build
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+      - name: List generated APKs
+        run: find app/build/outputs/apk -type f -name '*.apk' -print
+      - name: Upload debug APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Just-Player-original-debug
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
