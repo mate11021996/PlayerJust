@@ -883,9 +883,18 @@ public class PlayerActivity extends Activity {
                     return true;
                 }
                 break;
+            case KeyEvent.KEYCODE_MEDIA_REWIND:
+                if (player != null) {
+                    playerView.removeCallbacks(playerView.textClearRunnable);
+                    playerView.keySeekStart = -1;
+                    player.setSeekParameters(SeekParameters.EXACT);
+                    player.seekTo(0);
+                    playerView.setCustomErrorMessage("00:00");
+                    return true;
+                }
+                break;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_BUTTON_L2:
-            case KeyEvent.KEYCODE_MEDIA_REWIND:
             case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
             case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
                 if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND ||
