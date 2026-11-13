@@ -883,9 +883,9 @@ public class PlayerActivity extends Activity {
                     return true;
                 }
                 break;
-            case KeyEvent.KEYCODE_MEDIA_REWIND:
             case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
-            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
+                // Button Mapper's "Previous Track" action always returns to the
+                // beginning of the current video. Keep it separate from Rewind.
                 if (player != null) {
                     playerView.removeCallbacks(playerView.textClearRunnable);
                     playerView.keySeekStart = -1;
@@ -897,7 +897,10 @@ public class PlayerActivity extends Activity {
                 break;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_BUTTON_L2:
-                if (!controllerVisibleFully) {
+            case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
+                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND ||
+                        keyCode == KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD) {
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
