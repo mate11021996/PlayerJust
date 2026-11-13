@@ -368,13 +368,13 @@ public class PlayerActivity extends Activity {
                 }
                 scrubbingNoticeable = false;
                 isScrubbing = true;
-                // Let Media3 coalesce rapid timeline seeks and temporarily
-                // prioritize video decoder throughput while the user scrubs.
-                player.setScrubbingModeEnabled(true);
-                frameRendered = true;
+                // Avoid seeking the network stream while the thumb is moving.
+                // Repeated HLS seeks can flush/restart the video decoder and leave
+                // audio running normally while video catches up unevenly.
+                frameRendered = false;
                 playerView.setControllerShowTimeoutMs(-1);
                 scrubbingStart = player.getCurrentPosition();
-                player.setSeekParameters(SeekParameters.CLOSEST_SYNC);
+                player.setSeekParameters(SeekParameters.DEFAULT);
                 reportScrubbing(position);
             }
 
@@ -388,10 +388,9 @@ public class PlayerActivity extends Activity {
                 playerView.setCustomErrorMessage(null);
                 isScrubbing = false;
                 if (player != null) {
-                    // Scrubbing mode is only for previewing frames while the
-                    // user moves the thumb. Finish the gesture in normal playback
-                    // mode so the final seek uses the regular decoder pipeline.
-                    player.setScrubbingModeEnabled(false);
+                    // Perform one seek after the user releases the thumb.
+                    // This avoids repeatedly flushing the decoder during fast
+                    // timeline movement and restores normal frame pacing.
                     player.setSeekParameters(SeekParameters.DEFAULT);
                     player.seekTo(position);
                 }
@@ -2197,12 +2196,8 @@ public class PlayerActivity extends Activity {
             playerView.clearIcon();
             playerView.setCustomErrorMessage(Utils.formatMilisSign(diff));
         }
-        if (frameRendered) {
-            frameRendered = false;
-            if (player != null) {
-                player.seekTo(position);
-            }
-        }
+        // Seeking is intentionally deferred until onScrubStop. A rapid
+        // drag therefore produces one decoder reposition instead of many.
     }
 
     void updateSubtitleStyle(final Context context) {
