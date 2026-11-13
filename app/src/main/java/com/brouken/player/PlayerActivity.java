@@ -368,6 +368,9 @@ public class PlayerActivity extends Activity {
                 }
                 scrubbingNoticeable = false;
                 isScrubbing = true;
+                // Let Media3 coalesce rapid timeline seeks and temporarily
+                // prioritize video decoder throughput while the user scrubs.
+                player.setScrubbingModeEnabled(true);
                 frameRendered = true;
                 playerView.setControllerShowTimeoutMs(-1);
                 scrubbingStart = player.getCurrentPosition();
@@ -384,6 +387,12 @@ public class PlayerActivity extends Activity {
             public void onScrubStop(TimeBar timeBar, long position, boolean canceled) {
                 playerView.setCustomErrorMessage(null);
                 isScrubbing = false;
+                if (player != null) {
+                    // Exit optimized scrubbing mode only after the final
+                    // timeline position has been submitted.
+                    player.seekTo(position);
+                    player.setScrubbingModeEnabled(false);
+                }
                 if (restorePlayState) {
                     restorePlayState = false;
                     playerView.setControllerShowTimeoutMs(PlayerActivity.CONTROLLER_TIMEOUT);
