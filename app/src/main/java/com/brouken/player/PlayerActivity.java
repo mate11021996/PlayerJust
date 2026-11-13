@@ -1324,7 +1324,41 @@ public class PlayerActivity extends Activity {
 
         if (player.canAdvertiseSession()) {
             try {
-                mediaSession = new MediaSession.Builder(this, player).build();
+                mediaSession = new MediaSession.Builder(this, player)
+                        .setCallback(new MediaSession.Callback() {
+                            @Override
+                            public boolean onMediaButtonEvent(@NonNull MediaSession session,
+                                                              @NonNull MediaSession.ControllerInfo controller,
+                                                              @NonNull Intent intent) {
+                                // Button remappers may deliver transport buttons through the
+                                // MediaSession media-button intent instead of Activity key events.
+                                if (Intent.ACTION_MEDIA_BUTTON.equals(intent.getAction())) {
+                                    final KeyEvent keyEvent = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+                                    if (keyEvent != null) {
+                                        final int keyCode = keyEvent.getKeyCode();
+                                        switch (keyCode) {
+                                            case KeyEvent.KEYCODE_MEDIA_REWIND:
+                                            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                                            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
+                                            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+                                            case KeyEvent.KEYCODE_MEDIA_NEXT:
+                                            case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
+                                            case KeyEvent.KEYCODE_MEDIA_PLAY:
+                                            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+                                            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                                                if (keyEvent.getAction() == KeyEvent.ACTION_DOWN) {
+                                                    PlayerActivity.this.onKeyDown(keyCode, keyEvent);
+                                                } else if (keyEvent.getAction() == KeyEvent.ACTION_UP) {
+                                                    PlayerActivity.this.onKeyUp(keyCode, keyEvent);
+                                                }
+                                                return true;
+                                        }
+                                    }
+                                }
+                                return super.onMediaButtonEvent(session, controller, intent);
+                            }
+                        })
+                        .build();
             } catch (IllegalStateException e) {
                 e.printStackTrace();
             }
