@@ -886,6 +886,8 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_BUTTON_L2:
             case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
                 if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) {
                     if (player == null)
                         break;
@@ -907,6 +909,8 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_RIGHT:
             case KeyEvent.KEYCODE_BUTTON_R2:
             case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
                 if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
                     if (player == null)
                         break;
@@ -958,9 +962,13 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_BUTTON_L2:
             case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
             case KeyEvent.KEYCODE_DPAD_RIGHT:
             case KeyEvent.KEYCODE_BUTTON_R2:
             case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
                 if (!isScrubbing) {
                     playerView.postDelayed(playerView.textClearRunnable, 1000);
                 }
@@ -998,11 +1006,32 @@ public class PlayerActivity extends Activity {
             return true;
         }
 
+        // Handle media transport keys before child views / Media3 controls can consume them.
+        // This also makes Button Remapper's Previous/Next Track actions work with the controller visible.
+        final int keyCode = event.getKeyCode();
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_REWIND:
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
+            case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    onKeyDown(keyCode, event);
+                } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                    onKeyUp(keyCode, event);
+                }
+                return true;
+        }
+
         if (isTvBox && !controllerVisibleFully) {
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                onKeyDown(event.getKeyCode(), event);
+                onKeyDown(keyCode, event);
             } else if (event.getAction() == KeyEvent.ACTION_UP) {
-                onKeyUp(event.getKeyCode(), event);
+                onKeyUp(keyCode, event);
             }
             return true;
         } else {
