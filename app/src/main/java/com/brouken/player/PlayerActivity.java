@@ -1364,7 +1364,7 @@ public class PlayerActivity extends Activity {
                                         }
                                     }
                                 }
-                                return super.onMediaButtonEvent(session, controller, intent);
+                                return false;
                             }
                         })
                         .build();
