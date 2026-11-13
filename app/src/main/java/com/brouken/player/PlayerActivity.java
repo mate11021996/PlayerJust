@@ -389,10 +389,11 @@ public class PlayerActivity extends Activity {
                 isScrubbing = false;
                 if (player != null) {
                     // Perform one seek after the user releases the thumb.
-                    // This avoids repeatedly flushing the decoder during fast
-                    // timeline movement and restores normal frame pacing.
-                    player.setSeekParameters(SeekParameters.DEFAULT);
+                    // Land on the nearest keyframe so the video decoder does
+                    // not have to catch up from a distant earlier frame.
+                    player.setSeekParameters(SeekParameters.CLOSEST_SYNC);
                     player.seekTo(position);
+                    player.setSeekParameters(SeekParameters.DEFAULT);
                 }
                 if (restorePlayState) {
                     restorePlayState = false;
@@ -1297,6 +1298,9 @@ public class PlayerActivity extends Activity {
                 .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE);
         MediaCodecUtil.setMapDV7ToHevc(mPrefs.mapDV7ToHevc);
         @SuppressLint("WrongConstant") RenderersFactory renderersFactory = new DefaultRenderersFactory(this)
+                // If the preferred hardware codec cannot initialize or recover,
+                // allow Media3 to try another compatible decoder.
+                .setEnableDecoderFallback(true)
                 .setExtensionRendererMode(mPrefs.decoderPriority);
 
         ExoPlayer.Builder playerBuilder = new ExoPlayer.Builder(this, renderersFactory)
