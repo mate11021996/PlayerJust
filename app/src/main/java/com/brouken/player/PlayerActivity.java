@@ -888,7 +888,8 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_MEDIA_REWIND:
             case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
             case KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD:
-                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) {
+                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND ||
+                        keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD) {
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
@@ -911,7 +912,8 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
             case KeyEvent.KEYCODE_MEDIA_NEXT:
             case KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD:
-                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
+                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD ||
+                        keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD) {
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
