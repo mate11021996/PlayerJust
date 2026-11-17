@@ -79,6 +79,7 @@ final class CatchupHlsRecovery {
         private volatile HlsPlaylistTracker tracker;
         private volatile Handler trackerHandler;
         private volatile DataSource.Factory playlistDataSourceFactory;
+        private volatile DataSpec activePlaylistDataSpec;
         private volatile Uri activePlaylistUri;
         private final Map<String, PlaylistSnapshot> playlistSnapshots = new HashMap<>();
 
@@ -176,10 +177,17 @@ final class CatchupHlsRecovery {
             if (factory == null || playlistUri == null) return;
 
             Log.d(TAG, "Direct playlist refresh starting: " + playlistUri);
+            DataSpec requestSpec = activePlaylistDataSpec;
+            if (requestSpec == null || !playlistUri.equals(requestSpec.uri)) {
+                Log.w(TAG, "Direct playlist refresh skipped: no matching original request metadata");
+                return;
+            }
             DataSource source = factory.createDataSource();
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             try {
-                long openedLength = source.open(new DataSpec.Builder().setUri(playlistUri).build());
+                // Reuse Media3's original playlist request verbatim. Stalker portals may
+                // require request headers, method, or body that are absent from a bare GET.
+                long openedLength = source.open(requestSpec);
                 Log.d(TAG, "Direct playlist refresh opened: length=" + openedLength
                         + ", responseUri=" + source.getUri()
                         + ", headers=" + source.getResponseHeaders());
@@ -276,9 +284,10 @@ final class CatchupHlsRecovery {
             this.trackerHandler = new Handler(looper);
         }
 
-        void onPlaylistRequested(Uri uri) {
-            if (uri != null) {
-                activePlaylistUri = uri;
+        void onPlaylistRequested(DataSpec dataSpec) {
+            if (dataSpec != null && dataSpec.uri != null) {
+                activePlaylistUri = dataSpec.uri;
+                activePlaylistDataSpec = dataSpec;
             }
         }
 
@@ -323,6 +332,7 @@ final class CatchupHlsRecovery {
         @Override
         public long open(DataSpec dataSpec) throws IOException {
             playlistUri = dataSpec.uri;
+            controller.onPlaylistRequested(dataSpec);
             playlistBytes = new ByteArrayOutputStream();
             return upstream.open(dataSpec);
         }
