@@ -76,6 +76,9 @@ import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.HttpDataSource;
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlaybackException;
 import androidx.media3.exoplayer.ExoPlayer;
@@ -112,6 +115,42 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 public class PlayerActivity extends Activity {
+
+    /**
+     * IPTV catch-up servers sometimes publish a segment before it is available.
+     * Media3 normally treats HTTP 404 as non-retryable. Retry only 404 responses
+     * for a short, bounded period; all other errors keep Media3's default policy.
+     */
+    private static final class Iptv404RetryPolicy extends DefaultLoadErrorHandlingPolicy {
+        private static final int MAX_RETRIES = 5;
+
+        Iptv404RetryPolicy() {
+            super(MAX_RETRIES + 1);
+        }
+
+        @Override
+        public int getMinimumLoadableRetryCount(int dataType) {
+            return MAX_RETRIES + 1;
+        }
+
+        @Override
+        public long getRetryDelayMsFor(LoadErrorHandlingPolicy.LoadErrorInfo loadErrorInfo) {
+            Throwable cause = loadErrorInfo.exception;
+            while (cause != null) {
+                if (cause instanceof HttpDataSource.InvalidResponseCodeException) {
+                    HttpDataSource.InvalidResponseCodeException responseError =
+                            (HttpDataSource.InvalidResponseCodeException) cause;
+                    if (responseError.responseCode == 404 && loadErrorInfo.errorCount <= MAX_RETRIES) {
+                        // Bounded backoff: 1, 2, 3, 4, then 5 seconds.
+                        return 1000L * loadErrorInfo.errorCount;
+                    }
+                    break;
+                }
+                cause = cause.getCause();
+            }
+            return super.getRetryDelayMsFor(loadErrorInfo);
+        }
+    }
 
     private PlayerListener playerListener;
     private BroadcastReceiver mReceiver;
@@ -1214,10 +1253,16 @@ public class PlayerActivity extends Activity {
                 httpDataSourceFactory.setDefaultRequestProperties(headers);
             }
             // Inspect Stalker playlists, but pass ordinary live playlists through unchanged.
-            playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
+            DefaultMediaSourceFactory networkMediaSourceFactory = new DefaultMediaSourceFactory(
                     new GrowingHlsDataSource.Factory(httpDataSourceFactory,
                             isLikelyCatchupUrl(), isLikelyStalkerHlsUrl()),
-                    extractorsFactory));
+                    extractorsFactory);
+            // Apply the bounded 404 retry only to recognized catch-up URLs.
+            // Ordinary live channels and local files retain the default policy.
+            if (isLikelyCatchupUrl()) {
+                networkMediaSourceFactory.setLoadErrorHandlingPolicy(new Iptv404RetryPolicy());
+            }
+            playerBuilder.setMediaSourceFactory(networkMediaSourceFactory);
         }
 
         player = playerBuilder.build();
