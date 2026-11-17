@@ -82,6 +82,8 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.RenderersFactory;
 import androidx.media3.exoplayer.SeekParameters;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.exoplayer.hls.HlsMediaSource;
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.extractor.DefaultExtractorsFactory;
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
@@ -1219,10 +1221,20 @@ public class PlayerActivity extends Activity {
                 httpDataSourceFactory.setDefaultRequestProperties(headers);
             }
             // Inspect Stalker playlists, but pass ordinary live playlists through unchanged.
-            playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
-                    new GrowingHlsDataSource.Factory(httpDataSourceFactory,
-                            isLikelyCatchupUrl(), isLikelyStalkerHlsUrl()),
-                    extractorsFactory));
+            DataSource.Factory growingDataSourceFactory = new GrowingHlsDataSource.Factory(
+                    httpDataSourceFactory, isLikelyCatchupUrl(), isLikelyStalkerHlsUrl());
+            if (isLikelyCatchupUrl()) {
+                // Add a second URL for the same catch-up playlist. Media3 can then use its
+                // normal HLS track-fallback path after a segment 404, causing a fresh playlist
+                // request without rebuilding the ExoPlayer instance.
+                HlsMediaSource.Factory hlsFactory = new HlsMediaSource.Factory(growingDataSourceFactory);
+                hlsFactory.setPlaylistParserFactory(new RetryingHlsPlaylistParserFactory());
+                hlsFactory.setLoadErrorHandlingPolicy(new DefaultLoadErrorHandlingPolicy());
+                playerBuilder.setMediaSourceFactory(hlsFactory);
+            } else {
+                playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
+                        growingDataSourceFactory, extractorsFactory));
+            }
         }
 
         player = playerBuilder.build();
