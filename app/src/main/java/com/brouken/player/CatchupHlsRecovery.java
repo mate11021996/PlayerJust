@@ -100,11 +100,37 @@ final class CatchupHlsRecovery {
 
         private long playlistVersion;
 
+        private static String safeUri(Uri uri) {
+            if (uri == null) return "null";
+            String path = uri.getPath();
+            String suffix = "";
+            if (path != null) {
+                int dot = path.lastIndexOf('.');
+                if (dot > path.lastIndexOf('/')) suffix = path.substring(dot);
+                if (suffix.length() > 12) suffix = "";
+            }
+            java.util.Set<String> keys = new java.util.TreeSet<>(uri.getQueryParameterNames());
+            return uri.getScheme() + "://" + uri.getHost()
+                    + " [pathSegments=" + uri.getPathSegments().size()
+                    + ", suffix=" + suffix + ", queryKeys=" + keys + "]";
+        }
+
+        private static String contentType(Map<String, List<String>> headers) {
+            if (headers == null) return "unknown";
+            for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+                if ("content-type".equalsIgnoreCase(entry.getKey())
+                        && entry.getValue() != null && !entry.getValue().isEmpty()) {
+                    return entry.getValue().get(0);
+                }
+            }
+            return "missing";
+        }
+
         synchronized void onPlaylistLoaded(Uri uri, byte[] bytes) {
             if (uri == null || bytes == null || bytes.length == 0) return;
             String body = new String(bytes, StandardCharsets.UTF_8);
             if (!body.startsWith("#EXTM3U") || !body.contains("#EXTINF:")) {
-                Log.w(TAG, "Playlist parse skipped: uri=" + uri + ", bytes=" + bytes.length
+                Log.w(TAG, "Playlist parse skipped: uri=" + safeUri(uri) + ", bytes=" + bytes.length
                         + ", startsWithM3u=" + body.startsWith("#EXTM3U")
                         + ", hasExtinf=" + body.contains("#EXTINF:"));
                 return;
@@ -145,7 +171,7 @@ final class CatchupHlsRecovery {
             playlistSnapshots.put(key, new PlaylistSnapshot(playlistVersion, segments));
             activePlaylistUri = uri;
             notifyAll();
-            Log.d(TAG, "Playlist loaded: sequence=" + mediaSequence
+            Log.d(TAG, "Playlist loaded: uri=" + safeUri(uri) + ", sequence=" + mediaSequence
                     + ", segments=" + segments.size() + ", version=" + playlistVersion);
         }
 
@@ -176,7 +202,7 @@ final class CatchupHlsRecovery {
             DataSource.Factory factory = playlistDataSourceFactory;
             if (factory == null || playlistUri == null) return;
 
-            Log.d(TAG, "Direct playlist refresh starting: " + playlistUri);
+            Log.d(TAG, "Direct playlist refresh starting: " + safeUri(playlistUri));
             DataSpec requestSpec = activePlaylistDataSpec;
             if (requestSpec == null || !playlistUri.equals(requestSpec.uri)) {
                 Log.w(TAG, "Direct playlist refresh skipped: no matching original request metadata");
@@ -189,8 +215,8 @@ final class CatchupHlsRecovery {
                 // require request headers, method, or body that are absent from a bare GET.
                 long openedLength = source.open(requestSpec);
                 Log.d(TAG, "Direct playlist refresh opened: length=" + openedLength
-                        + ", responseUri=" + source.getUri()
-                        + ", headers=" + source.getResponseHeaders());
+                        + ", responseUri=" + safeUri(source.getUri())
+                        + ", contentType=" + contentType(source.getResponseHeaders()));
                 byte[] buffer = new byte[8192];
                 int count;
                 while ((count = source.read(buffer, 0, buffer.length)) != C.RESULT_END_OF_INPUT) {
@@ -204,10 +230,10 @@ final class CatchupHlsRecovery {
                 }
                 byte[] playlistBytes = output.toByteArray();
                 Log.d(TAG, "Direct playlist refresh read: bytes=" + playlistBytes.length
-                        + ", uri=" + playlistUri);
+                        + ", uri=" + safeUri(playlistUri));
                 onPlaylistLoaded(playlistUri, playlistBytes);
             } catch (IOException error) {
-                Log.w(TAG, "Direct playlist refresh failed for " + playlistUri, error);
+                Log.w(TAG, "Direct playlist refresh failed for " + safeUri(playlistUri), error);
             } finally {
                 try {
                     source.close();
@@ -334,7 +360,16 @@ final class CatchupHlsRecovery {
             playlistUri = dataSpec.uri;
             controller.onPlaylistRequested(dataSpec);
             playlistBytes = new ByteArrayOutputStream();
-            return upstream.open(dataSpec);
+            long openedLength = upstream.open(dataSpec);
+            Log.d(TAG, "Playlist request opened: requestUri=" + safeUri(dataSpec.uri)
+                    + ", responseUri=" + safeUri(upstream.getUri())
+                    + ", contentType=" + contentType(upstream.getResponseHeaders())
+                    + ", method=" + dataSpec.httpMethod
+                    + ", flags=" + dataSpec.flags
+                    + ", bodyBytes=" + (dataSpec.httpBody == null ? 0 : dataSpec.httpBody.length)
+                    + ", requestHeaderNames=" + (dataSpec.httpRequestHeaders == null
+                            ? "[]" : new java.util.TreeSet<>(dataSpec.httpRequestHeaders.keySet())));
+            return openedLength;
         }
 
         @Override
@@ -343,6 +378,9 @@ final class CatchupHlsRecovery {
             if (count > 0 && playlistBytes != null && playlistBytes.size() < 2 * 1024 * 1024) {
                 playlistBytes.write(buffer, offset, count);
             } else if (count == C.RESULT_END_OF_INPUT && playlistBytes != null) {
+                Log.d(TAG, "Playlist response completed: requestUri=" + safeUri(playlistUri)
+                        + ", responseUri=" + safeUri(upstream.getUri())
+                        + ", bytes=" + playlistBytes.size());
                 controller.onPlaylistLoaded(playlistUri, playlistBytes.toByteArray());
                 playlistBytes = null;
             }
