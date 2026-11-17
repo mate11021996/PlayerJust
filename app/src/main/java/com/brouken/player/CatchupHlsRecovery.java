@@ -1,6 +1,8 @@
 package com.brouken.player;
 
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import androidx.media3.common.C;
@@ -74,6 +76,7 @@ final class CatchupHlsRecovery {
 
     private static final class RecoveryController {
         private volatile HlsPlaylistTracker tracker;
+        private volatile Handler trackerHandler;
         private volatile Uri activePlaylistUri;
         private final Map<String, PlaylistSnapshot> playlistSnapshots = new HashMap<>();
 
@@ -144,27 +147,59 @@ final class CatchupHlsRecovery {
             return null;
         }
 
-        synchronized Uri awaitUpdatedSegment(Uri playlistUri, long sequence, Uri failedUri,
-                                             long previousVersion, long timeoutMs) throws IOException {
+        private static final class SegmentReplacement {
+            final long sequence;
+            final Uri uri;
+
+            SegmentReplacement(long sequence, Uri uri) {
+                this.sequence = sequence;
+                this.uri = uri;
+            }
+        }
+
+        synchronized SegmentReplacement awaitUpdatedSegment(Uri playlistUri, long sequence, Uri failedUri,
+                                                              long previousVersion, long timeoutMs)
+                throws IOException {
             long deadline = android.os.SystemClock.elapsedRealtime() + timeoutMs;
+            long nextRefreshMs = 0L;
             String key = playlistUri.toString();
             while (true) {
                 PlaylistSnapshot snapshot = playlistSnapshots.get(key);
                 if (snapshot != null && snapshot.version > previousVersion) {
                     Uri updatedUri = snapshot.segmentsBySequence.get(sequence);
-                    if (updatedUri == null) {
-                        Log.d(TAG, "Refreshed playlist no longer contains failed segment sequence " + sequence);
-                        return null;
-                    }
-                    if (!updatedUri.equals(failedUri)) {
+                    if (updatedUri != null && !updatedUri.equals(failedUri)) {
                         Log.d(TAG, "Playlist changed segment sequence " + sequence + " to " + updatedUri);
-                        return updatedUri;
+                        return new SegmentReplacement(sequence, updatedUri);
                     }
+
+                    // The server still advertises the failed URI, or has already removed
+                    // that sequence. Continue from the next segment present in the refreshed
+                    // playlist instead of requesting the same known-bad URL again.
+                    for (Map.Entry<Long, Uri> entry : snapshot.segmentsBySequence.entrySet()) {
+                        if (entry.getKey() > sequence) {
+                            Log.w(TAG, "Skipping unavailable segment sequence " + sequence
+                                    + " and continuing with sequence " + entry.getKey()
+                                    + ": " + entry.getValue());
+                            return new SegmentReplacement(entry.getKey(), entry.getValue());
+                        }
+                    }
+                    Log.w(TAG, "Refreshed playlist has no segment after failed sequence " + sequence);
+                    return null;
                 }
-                long remaining = deadline - android.os.SystemClock.elapsedRealtime();
+
+                long now = android.os.SystemClock.elapsedRealtime();
+                long remaining = deadline - now;
                 if (remaining <= 0) return null;
+
+                // refreshPlaylist() is a no-op while Media3 is already loading this playlist.
+                // Re-post it periodically so a refresh is issued as soon as that load finishes.
+                if (now >= nextRefreshMs) {
+                    requestPlaylistRefresh(playlistUri);
+                    nextRefreshMs = now + 250L;
+                }
+
                 try {
-                    wait(remaining);
+                    wait(Math.min(remaining, 250L));
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw new IOException("Interrupted while waiting for refreshed HLS playlist", interrupted);
@@ -180,6 +215,9 @@ final class CatchupHlsRecovery {
 
         void setTracker(HlsPlaylistTracker tracker) {
             this.tracker = tracker;
+            Looper looper = Looper.myLooper();
+            if (looper == null) looper = Looper.getMainLooper();
+            this.trackerHandler = new Handler(looper);
         }
 
         void onPlaylistRequested(Uri uri) {
@@ -189,20 +227,24 @@ final class CatchupHlsRecovery {
         }
 
         boolean requestPlaylistRefresh() {
+            return requestPlaylistRefresh(activePlaylistUri);
+        }
+
+        boolean requestPlaylistRefresh(Uri playlistUri) {
             HlsPlaylistTracker currentTracker = tracker;
-            Uri playlistUri = activePlaylistUri;
-            if (currentTracker == null || playlistUri == null) {
+            Handler handler = trackerHandler;
+            if (currentTracker == null || handler == null || playlistUri == null) {
                 return false;
             }
-            try {
-                // DefaultHlsPlaylistTracker schedules the actual network load on
-                // its playlist handler, independently of this segment load thread.
-                currentTracker.refreshPlaylist(playlistUri);
-                return true;
-            } catch (RuntimeException ignored) {
-                // The tracker may not have registered this URI yet or may be releasing.
-                return false;
-            }
+            // HlsPlaylistTracker is owned by the player/application looper. Never call it
+            // directly from the segment loader thread.
+            return handler.post(() -> {
+                try {
+                    currentTracker.refreshPlaylist(playlistUri);
+                } catch (RuntimeException error) {
+                    Log.w(TAG, "Playlist refresh request failed for " + playlistUri, error);
+                }
+            });
         }
     }
 
@@ -303,15 +345,16 @@ final class CatchupHlsRecovery {
 
                     long waitMs = RETRY_DELAYS_MS[retryIndex++];
                     if (segmentSequence != null && playlistUri != null) {
-                        Uri replacement = controller.awaitUpdatedSegment(
+                        RecoveryController.SegmentReplacement replacement = controller.awaitUpdatedSegment(
                                 playlistUri, segmentSequence, failedUri, previousVersion,
-                                Math.max(1200L, waitMs));
+                                Math.max(2000L, waitMs));
                         if (replacement != null) {
-                            currentSpec = currentSpec.buildUpon().setUri(replacement).build();
+                            currentSpec = currentSpec.buildUpon().setUri(replacement.uri).build();
+                            segmentSequence = replacement.sequence;
                             Log.d(TAG, "Retrying sequence " + segmentSequence
-                                    + " with refreshed segment URI: " + replacement);
+                                    + " with refreshed segment URI: " + replacement.uri);
                         } else {
-                            Log.d(TAG, "No replacement URI for sequence " + segmentSequence
+                            Log.d(TAG, "No usable replacement segment after sequence " + segmentSequence
                                     + "; retrying current URI after playlist refresh wait");
                         }
                     } else {
