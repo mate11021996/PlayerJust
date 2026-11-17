@@ -840,10 +840,8 @@ public class PlayerActivity extends Activity {
                 break;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_BUTTON_L2:
-            case KeyEvent.KEYCODE_MEDIA_REWIND: {
-                    // One physical press = one 10-second step; ignore Android key-repeat events.
-                    if (event.getRepeatCount() > 0)
-                        return true;
+            case KeyEvent.KEYCODE_MEDIA_REWIND:
+                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) {
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
@@ -851,22 +849,21 @@ public class PlayerActivity extends Activity {
                     if (playerView.keySeekStart == -1) {
                         playerView.keySeekStart = pos;
                     }
+                    // Each key-down/repeat advances exactly 10 seconds backward.
                     long seekTo = pos - 10_000;
                     if (seekTo < 0)
                         seekTo = 0;
                     player.setSeekParameters(SeekParameters.EXACT);
                     player.seekTo(seekTo);
-                    final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
+                    final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
                     return true;
                 }
                 break;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
             case KeyEvent.KEYCODE_BUTTON_R2:
-            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: {
-                    // One physical press = one 10-second step; ignore Android key-repeat events.
-                    if (event.getRepeatCount() > 0)
-                        return true;
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
+                if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
@@ -874,13 +871,14 @@ public class PlayerActivity extends Activity {
                     if (playerView.keySeekStart == -1) {
                         playerView.keySeekStart = pos;
                     }
+                    // Each key-down/repeat advances exactly 10 seconds forward.
                     long seekTo = pos + 10_000;
                     long seekMax = player.getDuration();
                     if (seekMax != C.TIME_UNSET && seekTo > seekMax)
                         seekTo = seekMax;
                     player.setSeekParameters(SeekParameters.EXACT);
                     player.seekTo(seekTo);
-                    final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
+                    final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
                     return true;
                 }
