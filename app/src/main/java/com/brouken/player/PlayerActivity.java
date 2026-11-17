@@ -1222,9 +1222,13 @@ public class PlayerActivity extends Activity {
             GrowingHlsDataSource.Factory growingDataSourceFactory =
                     new GrowingHlsDataSource.Factory(httpDataSourceFactory,
                             isLikelyCatchupUrl(), isLikelyStalkerHlsUrl());
-            if (isLikelyCatchupUrl() || isLikelyStalkerHlsUrl()) {
-                // Catch-up HLS gets a tracker-aware 404 retry path. Other network
-                // media keeps the normal multi-format DefaultMediaSourceFactory.
+            String mediaPath = mPrefs.mediaUri.getPath();
+            boolean isHlsSource = isLikelyStalkerHlsUrl()
+                    || MimeTypes.APPLICATION_M3U8.equals(mPrefs.mediaType)
+                    || (mediaPath != null && mediaPath.toLowerCase(Locale.ROOT).endsWith(".m3u8"));
+            if (isHlsSource && (isLikelyCatchupUrl() || isLikelyStalkerHlsUrl())) {
+                // Catch-up HLS gets a tracker-aware 404 retry path. Non-HLS
+                // timeshift streams and other network media keep the normal factory.
                 playerBuilder.setMediaSourceFactory(
                         CatchupHlsRecovery.createFactory(growingDataSourceFactory, true));
             } else {
