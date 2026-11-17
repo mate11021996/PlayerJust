@@ -11,23 +11,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: set up JDK 17
-        uses: actions/setup-java@v1
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: 17
+          cache: gradle
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Build with Gradle
         run: ./gradlew build
-      - name: Assemble installable debug APK
-        run: ./gradlew assembleDebug
-      - name: Upload APK
+      - name: Assemble installable debug APKs
+        run: ./gradlew assembleLatestUniversalDebug assembleLegacyUniversalDebug
+      - name: Show generated APKs
+        run: find app/build/outputs/apk -type f -name '*.apk' -print
+      - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
           name: Just-Player-0.189-debug
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 14
