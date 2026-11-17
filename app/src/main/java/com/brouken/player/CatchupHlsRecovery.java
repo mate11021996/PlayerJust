@@ -205,10 +205,17 @@ final class CatchupHlsRecovery {
             if (factory == null || playlistUri == null) return;
 
             Log.d(TAG, "Direct playlist refresh starting: " + safeUri(playlistUri));
+            // The playlist request may have been redirected, and the tracker may not
+            // yet have completed its first manifest load when a segment returns 404.
+            // Reuse the full original request when available; otherwise retry the
+            // original .m3u8 URI with a plain GET through the same configured factory.
             DataSpec requestSpec = activePlaylistDataSpec;
-            Uri knownResponseUri = activePlaylistUri;
-            if (requestSpec == null || knownResponseUri == null || !playlistUri.equals(knownResponseUri)) {
-                Log.w(TAG, "Direct playlist refresh skipped: no matching original playlist request");
+            Uri requestUri = activePlaylistRequestUri;
+            if (requestSpec == null && requestUri != null) {
+                requestSpec = new DataSpec(requestUri);
+            }
+            if (requestSpec == null) {
+                Log.w(TAG, "Direct playlist refresh skipped: original playlist URI not captured yet");
                 return;
             }
             DataSource source = factory.createDataSource();
@@ -291,7 +298,10 @@ final class CatchupHlsRecovery {
                     // playlist load in flight and ignore that request. Fetch the playlist
                     // through the same configured source factory on this loader thread.
                     fetchPlaylistDirectly(playlistUri);
-                    requestPlaylistRefresh(playlistUri);
+                    // Do not call DefaultHlsPlaylistTracker.refreshPlaylist() here.
+                    // Its bundle key is not guaranteed to match the redirected URI
+                    // exposed by DataSource.getUri(), and Media3 1.6.0-rc02 can NPE
+                    // when asked to refresh a URI that has no registered bundle.
                     nextRefreshMs = now + 750L;
                 }
 
@@ -455,10 +465,9 @@ final class CatchupHlsRecovery {
 
                     Uri failedUri = currentSpec.uri;
                     long previousVersion = controller.getPlaylistVersion(playlistUri);
-                    boolean refreshRequested = controller.requestPlaylistRefresh();
                     Log.d(TAG, "Segment returned 404; retry " + (retryIndex + 1)
                             + "/" + RETRY_DELAYS_MS.length
-                            + ", playlist refresh requested=" + refreshRequested
+                            + ", direct playlist refresh will be attempted"
                             + ", sequence=" + segmentSequence);
 
                     try {
