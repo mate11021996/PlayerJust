@@ -1703,7 +1703,7 @@ public class PlayerActivity extends Activity {
             try {
                 player.setMediaItem(retryItem, resumePositionMs);
                 player.prepare();
-                player.setPlayWhenReady(true);
+                player.setPlayWhenReady(shouldResume);
             } catch (Exception e) {
                 e.printStackTrace();
                 // Let the normal player error path decide whether another
