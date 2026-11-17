@@ -46,6 +46,7 @@ final class CatchupHlsRecovery {
             GrowingHlsDataSource.Factory growingDataSourceFactory,
             boolean enable404Recovery) {
         RecoveryController controller = new RecoveryController();
+        controller.setPlaylistDataSourceFactory(growingDataSourceFactory);
 
         HlsDataSourceFactory hlsDataSourceFactory = dataType -> {
             DataSource source = growingDataSourceFactory.createDataSource();
@@ -77,6 +78,7 @@ final class CatchupHlsRecovery {
     private static final class RecoveryController {
         private volatile HlsPlaylistTracker tracker;
         private volatile Handler trackerHandler;
+        private volatile DataSource.Factory playlistDataSourceFactory;
         private volatile Uri activePlaylistUri;
         private final Map<String, PlaylistSnapshot> playlistSnapshots = new HashMap<>();
 
@@ -157,6 +159,41 @@ final class CatchupHlsRecovery {
             }
         }
 
+        void setPlaylistDataSourceFactory(DataSource.Factory factory) {
+            this.playlistDataSourceFactory = factory;
+        }
+
+        private void fetchPlaylistDirectly(Uri playlistUri) {
+            DataSource.Factory factory = playlistDataSourceFactory;
+            if (factory == null || playlistUri == null) return;
+
+            DataSource source = factory.createDataSource();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try {
+                source.open(new DataSpec.Builder().setUri(playlistUri).build());
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = source.read(buffer, 0, buffer.length)) != C.RESULT_END_OF_INPUT) {
+                    if (count > 0) {
+                        output.write(buffer, 0, count);
+                        if (output.size() > 2 * 1024 * 1024) {
+                            Log.w(TAG, "Direct playlist refresh exceeded size limit");
+                            return;
+                        }
+                    }
+                }
+                onPlaylistLoaded(playlistUri, output.toByteArray());
+            } catch (IOException error) {
+                Log.w(TAG, "Direct playlist refresh failed for " + playlistUri, error);
+            } finally {
+                try {
+                    source.close();
+                } catch (IOException ignored) {
+                    // Ignore close failures after the refresh attempt.
+                }
+            }
+        }
+
         synchronized SegmentReplacement awaitUpdatedSegment(Uri playlistUri, long sequence, Uri failedUri,
                                                               long previousVersion, long timeoutMs)
                 throws IOException {
@@ -194,8 +231,12 @@ final class CatchupHlsRecovery {
                 // refreshPlaylist() is a no-op while Media3 is already loading this playlist.
                 // Re-post it periodically so a refresh is issued as soon as that load finishes.
                 if (now >= nextRefreshMs) {
+                    // Do not rely only on refreshPlaylist(): Media3 may already have a
+                    // playlist load in flight and ignore that request. Fetch the playlist
+                    // through the same configured source factory on this loader thread.
+                    fetchPlaylistDirectly(playlistUri);
                     requestPlaylistRefresh(playlistUri);
-                    nextRefreshMs = now + 250L;
+                    nextRefreshMs = now + 750L;
                 }
 
                 try {
