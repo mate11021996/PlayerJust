@@ -169,6 +169,8 @@ public class PlayerActivity extends Activity {
     public BrightnessControl mBrightnessControl;
     public static boolean haveMedia;
     private boolean videoLoading;
+    // Bounded automatic recovery for IPTV catch-up HLS source failures.
+    private int catchupRecoveryAttempts = 0;
     public static boolean controllerVisible;
     public static boolean controllerVisibleFully;
     public static Snackbar snackbar;
@@ -1188,6 +1190,7 @@ public class PlayerActivity extends Activity {
 
     public void initializePlayer() {
         boolean isNetworkUri = Utils.isSupportedNetworkUri(mPrefs.mediaUri);
+        catchupRecoveryAttempts = 0;
         haveMedia = mPrefs.mediaUri != null;
 
         if (player != null) {
@@ -1696,6 +1699,9 @@ public class PlayerActivity extends Activity {
             if (error instanceof ExoPlaybackException) {
                 final ExoPlaybackException exoPlaybackException = (ExoPlaybackException) error;
                 if (exoPlaybackException.type == ExoPlaybackException.TYPE_SOURCE) {
+                    if (isLikelyCatchupUrl() && recoverCatchupPlayback()) {
+                        return;
+                    }
                     releasePlayer(false);
                     return;
                 }
@@ -1706,6 +1712,42 @@ public class PlayerActivity extends Activity {
                 }
             }
         }
+    }
+
+    /**
+     * Rebuilds the HLS media source after a catch-up segment/source failure.
+     * A fresh media source forces Media3 to fetch the playlist again instead
+     * of repeatedly requesting the same stale segment. Limited to four
+     * attempts per playback session and recognized catch-up URLs.
+     */
+    private boolean recoverCatchupPlayback() {
+        if (player == null || mPrefs.mediaUri == null || catchupRecoveryAttempts >= 4) {
+            return false;
+        }
+
+        final long resumePositionMs = Math.max(0L, player.getCurrentPosition());
+        final MediaItem retryItem = player.getCurrentMediaItem() != null
+                ? player.getCurrentMediaItem()
+                : MediaItem.fromUri(mPrefs.mediaUri);
+
+        catchupRecoveryAttempts++;
+        updateLoading(true);
+
+        // Give the IPTV server a moment to publish/refresh the missing segment.
+        playerView.postDelayed(() -> {
+            if (player == null || isFinishing() || isDestroyed()) {
+                return;
+            }
+            try {
+                player.setMediaItem(retryItem, resumePositionMs);
+                player.prepare();
+                player.setPlayWhenReady(true);
+            } catch (Exception e) {
+                e.printStackTrace();
+                releasePlayer(false);
+            }
+        }, 1500L);
+        return true;
     }
 
     private void enableRotation() {
