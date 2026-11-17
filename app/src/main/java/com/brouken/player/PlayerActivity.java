@@ -1219,10 +1219,18 @@ public class PlayerActivity extends Activity {
                 httpDataSourceFactory.setDefaultRequestProperties(headers);
             }
             // Inspect Stalker playlists, but pass ordinary live playlists through unchanged.
-            playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
+            GrowingHlsDataSource.Factory growingDataSourceFactory =
                     new GrowingHlsDataSource.Factory(httpDataSourceFactory,
-                            isLikelyCatchupUrl(), isLikelyStalkerHlsUrl()),
-                    extractorsFactory));
+                            isLikelyCatchupUrl(), isLikelyStalkerHlsUrl());
+            if (isLikelyCatchupUrl() || isLikelyStalkerHlsUrl()) {
+                // Catch-up HLS gets a tracker-aware 404 retry path. Other network
+                // media keeps the normal multi-format DefaultMediaSourceFactory.
+                playerBuilder.setMediaSourceFactory(
+                        CatchupHlsRecovery.createFactory(growingDataSourceFactory, true));
+            } else {
+                playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
+                        growingDataSourceFactory, extractorsFactory));
+            }
         }
 
         player = playerBuilder.build();
