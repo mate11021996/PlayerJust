@@ -205,8 +205,9 @@ final class CatchupHlsRecovery {
 
             Log.d(TAG, "Direct playlist refresh starting: " + safeUri(playlistUri));
             DataSpec requestSpec = activePlaylistDataSpec;
-            if (requestSpec == null || !playlistUri.equals(requestSpec.uri)) {
-                Log.w(TAG, "Direct playlist refresh skipped: no matching original request metadata");
+            Uri knownResponseUri = activePlaylistUri;
+            if (requestSpec == null || knownResponseUri == null || !playlistUri.equals(knownResponseUri)) {
+                Log.w(TAG, "Direct playlist refresh skipped: no matching original playlist request");
                 return;
             }
             DataSource source = factory.createDataSource();
@@ -232,7 +233,11 @@ final class CatchupHlsRecovery {
                 byte[] playlistBytes = output.toByteArray();
                 Log.d(TAG, "Direct playlist refresh read: bytes=" + playlistBytes.length
                         + ", uri=" + safeUri(playlistUri));
-                onPlaylistLoaded(playlistUri, playlistBytes);
+                // The portal redirects the original .m3u8 request to its timeshift host.
+                // Parse relative segment URLs against the final response URI, but always
+                // repeat the original request DataSpec above (not the redirected URL).
+                Uri responseUri = source.getUri() != null ? source.getUri() : playlistUri;
+                onPlaylistLoaded(responseUri, playlistBytes);
             } catch (IOException error) {
                 Log.w(TAG, "Direct playlist refresh failed for " + safeUri(playlistUri), error);
             } finally {
@@ -312,9 +317,13 @@ final class CatchupHlsRecovery {
         }
 
         void onPlaylistRequested(DataSpec dataSpec) {
-            if (dataSpec != null && dataSpec.uri != null) {
-                activePlaylistUri = dataSpec.uri;
+            if (dataSpec == null || dataSpec.uri == null) return;
+            String path = dataSpec.uri.getPath();
+            // Keep the original media-playlist request, including its method, headers,
+            // body and flags. Do not replace it with the redirected timeshift URL.
+            if (path != null && path.toLowerCase(java.util.Locale.US).endsWith(".m3u8")) {
                 activePlaylistDataSpec = dataSpec;
+                Log.d(TAG, "Remembered original playlist request: " + safeUri(dataSpec.uri));
             }
         }
 
@@ -382,7 +391,8 @@ final class CatchupHlsRecovery {
                 Log.d(TAG, "Playlist response completed: requestUri=" + safeUri(playlistUri)
                         + ", responseUri=" + safeUri(upstream.getUri())
                         + ", bytes=" + playlistBytes.size());
-                controller.onPlaylistLoaded(playlistUri, playlistBytes.toByteArray());
+                Uri responseUri = upstream.getUri() != null ? upstream.getUri() : playlistUri;
+                controller.onPlaylistLoaded(responseUri, playlistBytes.toByteArray());
                 playlistBytes = null;
             }
             return count;
