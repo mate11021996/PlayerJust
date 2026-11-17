@@ -15,7 +15,10 @@ import androidx.media3.exoplayer.hls.playlist.HlsPlaylistTracker;
 import androidx.media3.exoplayer.upstream.CmcdConfiguration;
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -27,7 +30,9 @@ import java.util.Map;
  * already buffered media while the playlist tracker performs its own reload.
  */
 final class CatchupHlsRecovery {
-    private static final long[] RETRY_DELAYS_MS = {300, 700, 1200, 2000};
+    // Keep the retry window shorter than the old 4.2-second sequence.
+    // The live playlist is refreshed independently by Media3's tracker.
+    private static final long[] RETRY_DELAYS_MS = {150, 300, 600, 1000};
 
     private CatchupHlsRecovery() {}
 
@@ -66,6 +71,52 @@ final class CatchupHlsRecovery {
     private static final class RecoveryController {
         private volatile HlsPlaylistTracker tracker;
         private volatile Uri activePlaylistUri;
+        private final Map<String, PlaylistState> playlistStates = new HashMap<>();
+        private volatile boolean playlistHasAdvanced;
+
+        private static final class PlaylistState {
+            final long mediaSequence;
+            final int segmentCount;
+
+            PlaylistState(long mediaSequence, int segmentCount) {
+                this.mediaSequence = mediaSequence;
+                this.segmentCount = segmentCount;
+            }
+        }
+
+        synchronized void onPlaylistLoaded(Uri uri, byte[] bytes) {
+            if (uri == null || bytes == null || bytes.length == 0) return;
+            String body = new String(bytes, StandardCharsets.UTF_8);
+            if (!body.startsWith("#EXTM3U") || !body.contains("#EXTINF:")) return;
+
+            long sequence = 0L;
+            java.util.regex.Matcher sequenceMatcher = java.util.regex.Pattern
+                    .compile("(?m)^#EXT-X-MEDIA-SEQUENCE:(\\d+)")
+                    .matcher(body);
+            if (sequenceMatcher.find()) {
+                try { sequence = Long.parseLong(sequenceMatcher.group(1)); }
+                catch (NumberFormatException ignored) { return; }
+            }
+
+            java.util.regex.Matcher segmentMatcher = java.util.regex.Pattern
+                    .compile("(?m)^#EXTINF:")
+                    .matcher(body);
+            int segmentCount = 0;
+            while (segmentMatcher.find()) segmentCount++;
+
+            String key = uri.toString();
+            PlaylistState previous = playlistStates.put(key, new PlaylistState(sequence, segmentCount));
+            if (previous != null && (sequence > previous.mediaSequence
+                    || segmentCount > previous.segmentCount)) {
+                playlistHasAdvanced = true;
+            }
+            // Only media playlists (not master playlists) become refresh targets.
+            activePlaylistUri = uri;
+        }
+
+        boolean isAdvancingPlaylist() {
+            return playlistHasAdvanced;
+        }
 
         void setTracker(HlsPlaylistTracker tracker) {
             this.tracker = tracker;
@@ -80,7 +131,7 @@ final class CatchupHlsRecovery {
         boolean requestPlaylistRefresh() {
             HlsPlaylistTracker currentTracker = tracker;
             Uri playlistUri = activePlaylistUri;
-            if (currentTracker == null || playlistUri == null) {
+            if (currentTracker == null || playlistUri == null || !playlistHasAdvanced) {
                 return false;
             }
             try {
@@ -98,6 +149,8 @@ final class CatchupHlsRecovery {
     private static final class PlaylistTrackingDataSource implements DataSource {
         private final DataSource upstream;
         private final RecoveryController controller;
+        private Uri playlistUri;
+        private ByteArrayOutputStream playlistBytes;
 
         PlaylistTrackingDataSource(DataSource upstream, RecoveryController controller) {
             this.upstream = upstream;
@@ -111,13 +164,21 @@ final class CatchupHlsRecovery {
 
         @Override
         public long open(DataSpec dataSpec) throws IOException {
-            controller.onPlaylistRequested(dataSpec.uri);
+            playlistUri = dataSpec.uri;
+            playlistBytes = new ByteArrayOutputStream();
             return upstream.open(dataSpec);
         }
 
         @Override
         public int read(byte[] buffer, int offset, int length) throws IOException {
-            return upstream.read(buffer, offset, length);
+            int count = upstream.read(buffer, offset, length);
+            if (count > 0 && playlistBytes != null && playlistBytes.size() < 2 * 1024 * 1024) {
+                playlistBytes.write(buffer, offset, count);
+            } else if (count == C.RESULT_END_OF_INPUT && playlistBytes != null) {
+                controller.onPlaylistLoaded(playlistUri, playlistBytes.toByteArray());
+                playlistBytes = null;
+            }
+            return count;
         }
 
         @Override
@@ -132,6 +193,8 @@ final class CatchupHlsRecovery {
 
         @Override
         public void close() throws IOException {
+            playlistBytes = null;
+            playlistUri = null;
             upstream.close();
         }
     }
@@ -157,7 +220,11 @@ final class CatchupHlsRecovery {
                 try {
                     return upstream.open(dataSpec);
                 } catch (IOException error) {
+                    // Only use in-place retries after the media playlist has
+                    // demonstrably advanced. Static/final VOD playlists retain
+                    // their existing source-level recovery behavior.
                     if (!isNotFound(error) || retryIndex >= RETRY_DELAYS_MS.length
+                            || !controller.isAdvancingPlaylist()
                             || !controller.requestPlaylistRefresh()) {
                         throw error;
                     }
