@@ -102,7 +102,12 @@ final class CatchupHlsRecovery {
         synchronized void onPlaylistLoaded(Uri uri, byte[] bytes) {
             if (uri == null || bytes == null || bytes.length == 0) return;
             String body = new String(bytes, StandardCharsets.UTF_8);
-            if (!body.startsWith("#EXTM3U") || !body.contains("#EXTINF:")) return;
+            if (!body.startsWith("#EXTM3U") || !body.contains("#EXTINF:")) {
+                Log.w(TAG, "Playlist parse skipped: uri=" + uri + ", bytes=" + bytes.length
+                        + ", startsWithM3u=" + body.startsWith("#EXTM3U")
+                        + ", hasExtinf=" + body.contains("#EXTINF:"));
+                return;
+            }
 
             long mediaSequence = 0L;
             java.util.regex.Matcher sequenceMatcher = java.util.regex.Pattern
@@ -129,7 +134,10 @@ final class CatchupHlsRecovery {
                     nextLineIsSegmentUri = false;
                 }
             }
-            if (segments.isEmpty()) return;
+            if (segments.isEmpty()) {
+                Log.w(TAG, "Playlist parse found no segments: uri=" + uri + ", bytes=" + bytes.length);
+                return;
+            }
 
             String key = uri.toString();
             playlistVersion++;
@@ -167,10 +175,14 @@ final class CatchupHlsRecovery {
             DataSource.Factory factory = playlistDataSourceFactory;
             if (factory == null || playlistUri == null) return;
 
+            Log.d(TAG, "Direct playlist refresh starting: " + playlistUri);
             DataSource source = factory.createDataSource();
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             try {
-                source.open(new DataSpec.Builder().setUri(playlistUri).build());
+                long openedLength = source.open(new DataSpec.Builder().setUri(playlistUri).build());
+                Log.d(TAG, "Direct playlist refresh opened: length=" + openedLength
+                        + ", responseUri=" + source.getUri()
+                        + ", headers=" + source.getResponseHeaders());
                 byte[] buffer = new byte[8192];
                 int count;
                 while ((count = source.read(buffer, 0, buffer.length)) != C.RESULT_END_OF_INPUT) {
@@ -182,7 +194,10 @@ final class CatchupHlsRecovery {
                         }
                     }
                 }
-                onPlaylistLoaded(playlistUri, output.toByteArray());
+                byte[] playlistBytes = output.toByteArray();
+                Log.d(TAG, "Direct playlist refresh read: bytes=" + playlistBytes.length
+                        + ", uri=" + playlistUri);
+                onPlaylistLoaded(playlistUri, playlistBytes);
             } catch (IOException error) {
                 Log.w(TAG, "Direct playlist refresh failed for " + playlistUri, error);
             } finally {
