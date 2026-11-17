@@ -75,6 +75,32 @@ final class CatchupHlsRecovery {
         return factory;
     }
 
+    private static String safeUri(Uri uri) {
+        if (uri == null) return "null";
+        String path = uri.getPath();
+        String suffix = "";
+        if (path != null) {
+            int dot = path.lastIndexOf('.');
+            if (dot > path.lastIndexOf('/')) suffix = path.substring(dot);
+            if (suffix.length() > 12) suffix = "";
+        }
+        java.util.Set<String> keys = new java.util.TreeSet<>(uri.getQueryParameterNames());
+        return uri.getScheme() + "://" + uri.getHost()
+                + " [pathSegments=" + uri.getPathSegments().size()
+                + ", suffix=" + suffix + ", queryKeys=" + keys + "]";
+    }
+
+    private static String contentType(Map<String, List<String>> headers) {
+        if (headers == null) return "unknown";
+        for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+            if ("content-type".equalsIgnoreCase(entry.getKey())
+                    && entry.getValue() != null && !entry.getValue().isEmpty()) {
+                return entry.getValue().get(0);
+            }
+        }
+        return "missing";
+    }
+
     private static final class RecoveryController {
         private volatile HlsPlaylistTracker tracker;
         private volatile Handler trackerHandler;
@@ -100,31 +126,6 @@ final class CatchupHlsRecovery {
 
         private long playlistVersion;
 
-        private static String safeUri(Uri uri) {
-            if (uri == null) return "null";
-            String path = uri.getPath();
-            String suffix = "";
-            if (path != null) {
-                int dot = path.lastIndexOf('.');
-                if (dot > path.lastIndexOf('/')) suffix = path.substring(dot);
-                if (suffix.length() > 12) suffix = "";
-            }
-            java.util.Set<String> keys = new java.util.TreeSet<>(uri.getQueryParameterNames());
-            return uri.getScheme() + "://" + uri.getHost()
-                    + " [pathSegments=" + uri.getPathSegments().size()
-                    + ", suffix=" + suffix + ", queryKeys=" + keys + "]";
-        }
-
-        private static String contentType(Map<String, List<String>> headers) {
-            if (headers == null) return "unknown";
-            for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
-                if ("content-type".equalsIgnoreCase(entry.getKey())
-                        && entry.getValue() != null && !entry.getValue().isEmpty()) {
-                    return entry.getValue().get(0);
-                }
-            }
-            return "missing";
-        }
 
         synchronized void onPlaylistLoaded(Uri uri, byte[] bytes) {
             if (uri == null || bytes == null || bytes.length == 0) return;
