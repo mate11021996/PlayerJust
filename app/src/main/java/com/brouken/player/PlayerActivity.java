@@ -842,6 +842,9 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_BUTTON_L2:
             case KeyEvent.KEYCODE_MEDIA_REWIND:
                 if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) {
+                    // One physical press = one 10-second step; ignore Android key-repeat events.
+                    if (event.getRepeatCount() > 0)
+                        return true;
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
@@ -852,7 +855,7 @@ public class PlayerActivity extends Activity {
                     long seekTo = pos - 10_000;
                     if (seekTo < 0)
                         seekTo = 0;
-                    player.setSeekParameters(SeekParameters.PREVIOUS_SYNC);
+                    player.setSeekParameters(SeekParameters.EXACT);
                     player.seekTo(seekTo);
                     final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
@@ -863,6 +866,9 @@ public class PlayerActivity extends Activity {
             case KeyEvent.KEYCODE_BUTTON_R2:
             case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD:
                 if (!controllerVisibleFully || keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) {
+                    // One physical press = one 10-second step; ignore Android key-repeat events.
+                    if (event.getRepeatCount() > 0)
+                        return true;
                     if (player == null)
                         break;
                     playerView.removeCallbacks(playerView.textClearRunnable);
@@ -874,7 +880,7 @@ public class PlayerActivity extends Activity {
                     long seekMax = player.getDuration();
                     if (seekMax != C.TIME_UNSET && seekTo > seekMax)
                         seekTo = seekMax;
-                    PlayerActivity.player.setSeekParameters(SeekParameters.NEXT_SYNC);
+                    player.setSeekParameters(SeekParameters.EXACT);
                     player.seekTo(seekTo);
                     final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
@@ -1691,9 +1697,9 @@ public class PlayerActivity extends Activity {
                 : MediaItem.fromUri(mPrefs.mediaUri);
 
         catchupRecoveryAttempts++;
-        // 1, 2, 4, 8, then 15 seconds: avoid hammering an IPTV server that
-        // temporarily returns 404 or has not yet published the next segment.
-        final long delayMs = Math.min(1000L << Math.min(catchupRecoveryAttempts - 1, 4), 15000L);
+        // Fast recovery: 250 ms, 500 ms, 1 s, 2 s, then at most 3 s.
+        // The cap still avoids continuously hammering an IPTV server.
+        final long delayMs = Math.min(250L << Math.min(catchupRecoveryAttempts - 1, 4), 3000L);
         updateLoading(true);
 
         playerView.postDelayed(() -> {
