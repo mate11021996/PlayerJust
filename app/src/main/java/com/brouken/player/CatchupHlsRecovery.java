@@ -106,6 +106,7 @@ final class CatchupHlsRecovery {
         private volatile Handler trackerHandler;
         private volatile DataSource.Factory playlistDataSourceFactory;
         private volatile DataSpec activePlaylistDataSpec;
+        private volatile Uri activePlaylistRequestUri;
         private volatile Uri activePlaylistUri;
         private final Map<String, PlaylistSnapshot> playlistSnapshots = new HashMap<>();
 
@@ -323,25 +324,33 @@ final class CatchupHlsRecovery {
             // body and flags. Do not replace it with the redirected timeshift URL.
             if (path != null && path.toLowerCase(java.util.Locale.US).endsWith(".m3u8")) {
                 activePlaylistDataSpec = dataSpec;
+                activePlaylistRequestUri = dataSpec.uri;
                 Log.d(TAG, "Remembered original playlist request: " + safeUri(dataSpec.uri));
             }
         }
 
         boolean requestPlaylistRefresh() {
-            return requestPlaylistRefresh(activePlaylistUri);
+            return requestPlaylistRefresh(activePlaylistRequestUri);
         }
 
         boolean requestPlaylistRefresh(Uri playlistUri) {
             HlsPlaylistTracker currentTracker = tracker;
             Handler handler = trackerHandler;
-            if (currentTracker == null || handler == null || playlistUri == null) {
+            // Media3 indexes playlist bundles by the request URI, not the final URI
+            // returned after an HTTP redirect. Passing the redirected timeshift URI
+            // makes DefaultHlsPlaylistTracker.refreshPlaylist() dereference a null bundle.
+            Uri trackerPlaylistUri = activePlaylistRequestUri;
+            if (trackerPlaylistUri == null) trackerPlaylistUri = playlistUri;
+            if (currentTracker == null || handler == null || trackerPlaylistUri == null) {
                 return false;
             }
+            final Uri refreshUri = trackerPlaylistUri;
+            Log.d(TAG, "Requesting Media3 playlist refresh using original URI: " + safeUri(refreshUri));
             // HlsPlaylistTracker is owned by the player/application looper. Never call it
             // directly from the segment loader thread.
             return handler.post(() -> {
                 try {
-                    currentTracker.refreshPlaylist(playlistUri);
+                    currentTracker.refreshPlaylist(refreshUri);
                 } catch (RuntimeException error) {
                     Log.w(TAG, "Playlist refresh request failed for " + playlistUri, error);
                 }
