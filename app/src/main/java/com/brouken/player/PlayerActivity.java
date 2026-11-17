@@ -130,6 +130,8 @@ public class PlayerActivity extends Activity {
     public BrightnessControl mBrightnessControl;
     public static boolean haveMedia;
     private boolean videoLoading;
+    // Counts automatic catch-up source recoveries; reset only when a new item is initialized.
+    private long catchupRecoveryAttempts = 0;
     public static boolean controllerVisible;
     public static boolean controllerVisibleFully;
     public static Snackbar snackbar;
@@ -1148,6 +1150,7 @@ public class PlayerActivity extends Activity {
     }
 
     public void initializePlayer() {
+        catchupRecoveryAttempts = 0;
         boolean isNetworkUri = Utils.isSupportedNetworkUri(mPrefs.mediaUri);
         haveMedia = mPrefs.mediaUri != null;
 
@@ -1651,6 +1654,9 @@ public class PlayerActivity extends Activity {
             if (error instanceof ExoPlaybackException) {
                 final ExoPlaybackException exoPlaybackException = (ExoPlaybackException) error;
                 if (exoPlaybackException.type == ExoPlaybackException.TYPE_SOURCE) {
+                    if (isLikelyCatchupUrl() && recoverCatchupPlayback()) {
+                        return;
+                    }
                     releasePlayer(false);
                     return;
                 }
@@ -1661,6 +1667,51 @@ public class PlayerActivity extends Activity {
                 }
             }
         }
+    }
+
+    /**
+     * Recreates the catch-up media source after a fatal HLS source error.
+     * Recreating the source makes Media3 request the playlist again, while
+     * keeping the current playback position. Retries continue with a capped
+     * delay for this item; they stop naturally when the player/activity closes.
+     *
+     * This deliberately applies only to recognized catch-up URLs. Normal live
+     * channels and local files keep the original error handling.
+     */
+    private boolean recoverCatchupPlayback() {
+        if (player == null || mPrefs.mediaUri == null || playerView == null
+                || isFinishing() || isDestroyed()) {
+            return false;
+        }
+
+        final long resumePositionMs = Math.max(0L, player.getCurrentPosition());
+        final boolean shouldResume = player.getPlayWhenReady();
+        final MediaItem retryItem = player.getCurrentMediaItem() != null
+                ? player.getCurrentMediaItem()
+                : MediaItem.fromUri(mPrefs.mediaUri);
+
+        catchupRecoveryAttempts++;
+        // 1, 2, 4, 8, then 15 seconds: avoid hammering an IPTV server that
+        // temporarily returns 404 or has not yet published the next segment.
+        final long delayMs = Math.min(1000L << Math.min(catchupRecoveryAttempts - 1, 4), 15000L);
+        updateLoading(true);
+
+        playerView.postDelayed(() -> {
+            if (player == null || playerView == null || isFinishing() || isDestroyed()) {
+                return;
+            }
+            try {
+                player.setMediaItem(retryItem, resumePositionMs);
+                player.prepare();
+                player.setPlayWhenReady(true);
+            } catch (Exception e) {
+                e.printStackTrace();
+                // Let the normal player error path decide whether another
+                // catch-up recovery is possible.
+                releasePlayer(false);
+            }
+        }, delayMs);
+        return true;
     }
 
     private void enableRotation() {
