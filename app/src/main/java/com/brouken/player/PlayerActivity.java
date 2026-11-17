@@ -855,7 +855,7 @@ public class PlayerActivity extends Activity {
                         seekTo = 0;
                     player.setSeekParameters(SeekParameters.EXACT);
                     player.seekTo(seekTo);
-                    final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\\n" + Utils.formatMilis(seekTo);
+                    final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
                     return true;
                 }
@@ -878,7 +878,7 @@ public class PlayerActivity extends Activity {
                         seekTo = seekMax;
                     player.setSeekParameters(SeekParameters.EXACT);
                     player.seekTo(seekTo);
-                    final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\\n" + Utils.formatMilis(seekTo);
+                    final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
                     return true;
                 }
