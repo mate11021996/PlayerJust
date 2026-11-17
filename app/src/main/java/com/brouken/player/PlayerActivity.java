@@ -75,6 +75,7 @@ import androidx.media3.common.TrackGroup;
 import androidx.media3.common.TrackSelectionOverride;
 import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.Tracks;
+import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlaybackException;
@@ -82,6 +83,8 @@ import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.RenderersFactory;
 import androidx.media3.exoplayer.SeekParameters;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.exoplayer.hls.HlsMediaSource;
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.extractor.DefaultExtractorsFactory;
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
@@ -130,6 +133,8 @@ public class PlayerActivity extends Activity {
     public BrightnessControl mBrightnessControl;
     public static boolean haveMedia;
     private boolean videoLoading;
+    // Counts automatic catch-up source recoveries; reset only when a new item is initialized.
+    private long catchupRecoveryAttempts = 0;
     public static boolean controllerVisible;
     public static boolean controllerVisibleFully;
     public static Snackbar snackbar;
@@ -847,10 +852,11 @@ public class PlayerActivity extends Activity {
                     if (playerView.keySeekStart == -1) {
                         playerView.keySeekStart = pos;
                     }
+                    // Each key-down/repeat advances exactly 10 seconds backward.
                     long seekTo = pos - 10_000;
                     if (seekTo < 0)
                         seekTo = 0;
-                    player.setSeekParameters(SeekParameters.PREVIOUS_SYNC);
+                    player.setSeekParameters(SeekParameters.EXACT);
                     player.seekTo(seekTo);
                     final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
@@ -868,11 +874,12 @@ public class PlayerActivity extends Activity {
                     if (playerView.keySeekStart == -1) {
                         playerView.keySeekStart = pos;
                     }
+                    // Each key-down/repeat advances exactly 10 seconds forward.
                     long seekTo = pos + 10_000;
                     long seekMax = player.getDuration();
                     if (seekMax != C.TIME_UNSET && seekTo > seekMax)
                         seekTo = seekMax;
-                    PlayerActivity.player.setSeekParameters(SeekParameters.NEXT_SYNC);
+                    player.setSeekParameters(SeekParameters.EXACT);
                     player.seekTo(seekTo);
                     final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
@@ -1148,6 +1155,7 @@ public class PlayerActivity extends Activity {
     }
 
     public void initializePlayer() {
+        catchupRecoveryAttempts = 0;
         boolean isNetworkUri = Utils.isSupportedNetworkUri(mPrefs.mediaUri);
         haveMedia = mPrefs.mediaUri != null;
 
@@ -1214,10 +1222,20 @@ public class PlayerActivity extends Activity {
                 httpDataSourceFactory.setDefaultRequestProperties(headers);
             }
             // Inspect Stalker playlists, but pass ordinary live playlists through unchanged.
-            playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
-                    new GrowingHlsDataSource.Factory(httpDataSourceFactory,
-                            isLikelyCatchupUrl(), isLikelyStalkerHlsUrl()),
-                    extractorsFactory));
+            DataSource.Factory growingDataSourceFactory = new GrowingHlsDataSource.Factory(
+                    httpDataSourceFactory, isLikelyCatchupUrl(), isLikelyStalkerHlsUrl());
+            if (isLikelyCatchupUrl()) {
+                // Add a second URL for the same catch-up playlist. Media3 can then use its
+                // normal HLS track-fallback path after a segment 404, causing a fresh playlist
+                // request without rebuilding the ExoPlayer instance.
+                HlsMediaSource.Factory hlsFactory = new HlsMediaSource.Factory(growingDataSourceFactory);
+                hlsFactory.setPlaylistParserFactory(new RetryingHlsPlaylistParserFactory());
+                hlsFactory.setLoadErrorHandlingPolicy(new DefaultLoadErrorHandlingPolicy());
+                playerBuilder.setMediaSourceFactory(hlsFactory);
+            } else {
+                playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
+                        growingDataSourceFactory, extractorsFactory));
+            }
         }
 
         player = playerBuilder.build();
@@ -1651,6 +1669,9 @@ public class PlayerActivity extends Activity {
             if (error instanceof ExoPlaybackException) {
                 final ExoPlaybackException exoPlaybackException = (ExoPlaybackException) error;
                 if (exoPlaybackException.type == ExoPlaybackException.TYPE_SOURCE) {
+                    if (isLikelyCatchupUrl() && recoverCatchupPlayback()) {
+                        return;
+                    }
                     releasePlayer(false);
                     return;
                 }
@@ -1661,6 +1682,51 @@ public class PlayerActivity extends Activity {
                 }
             }
         }
+    }
+
+    /**
+     * Recreates the catch-up media source after a fatal HLS source error.
+     * Recreating the source makes Media3 request the playlist again, while
+     * keeping the current playback position. Retries continue with a capped
+     * delay for this item; they stop naturally when the player/activity closes.
+     *
+     * This deliberately applies only to recognized catch-up URLs. Normal live
+     * channels and local files keep the original error handling.
+     */
+    private boolean recoverCatchupPlayback() {
+        if (player == null || mPrefs.mediaUri == null || playerView == null
+                || isFinishing() || isDestroyed()) {
+            return false;
+        }
+
+        final long resumePositionMs = Math.max(0L, player.getCurrentPosition());
+        final boolean shouldResume = player.getPlayWhenReady();
+        final MediaItem retryItem = player.getCurrentMediaItem() != null
+                ? player.getCurrentMediaItem()
+                : MediaItem.fromUri(mPrefs.mediaUri);
+
+        catchupRecoveryAttempts++;
+        // Fast recovery: 250 ms, 500 ms, 1 s, 2 s, then at most 3 s.
+        // The cap still avoids continuously hammering an IPTV server.
+        final long delayMs = Math.min(250L << Math.min(catchupRecoveryAttempts - 1, 4), 3000L);
+        updateLoading(true);
+
+        playerView.postDelayed(() -> {
+            if (player == null || playerView == null || isFinishing() || isDestroyed()) {
+                return;
+            }
+            try {
+                player.setMediaItem(retryItem, resumePositionMs);
+                player.prepare();
+                player.setPlayWhenReady(shouldResume);
+            } catch (Exception e) {
+                e.printStackTrace();
+                // Let the normal player error path decide whether another
+                // catch-up recovery is possible.
+                releasePlayer(false);
+            }
+        }, delayMs);
+        return true;
     }
 
     private void enableRotation() {
