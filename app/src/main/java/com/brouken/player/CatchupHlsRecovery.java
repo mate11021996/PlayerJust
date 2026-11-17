@@ -1,6 +1,7 @@
 package com.brouken.player;
 
 import android.net.Uri;
+import android.util.Log;
 
 import androidx.media3.common.C;
 import androidx.media3.datasource.DataSource;
@@ -30,6 +31,7 @@ import java.util.Map;
  * already buffered media while the playlist tracker performs its own reload.
  */
 final class CatchupHlsRecovery {
+    private static final String TAG = "CatchupHlsRecovery";
     // Keep the retry window shorter than the old 4.2-second sequence.
     // The live playlist is refreshed independently by Media3's tracker.
     private static final long[] RETRY_DELAYS_MS = {150, 300, 600, 1000};
@@ -114,10 +116,6 @@ final class CatchupHlsRecovery {
             activePlaylistUri = uri;
         }
 
-        boolean isAdvancingPlaylist() {
-            return playlistHasAdvanced;
-        }
-
         void setTracker(HlsPlaylistTracker tracker) {
             this.tracker = tracker;
         }
@@ -131,7 +129,7 @@ final class CatchupHlsRecovery {
         boolean requestPlaylistRefresh() {
             HlsPlaylistTracker currentTracker = tracker;
             Uri playlistUri = activePlaylistUri;
-            if (currentTracker == null || playlistUri == null || !playlistHasAdvanced) {
+            if (currentTracker == null || playlistUri == null) {
                 return false;
             }
             try {
@@ -220,14 +218,17 @@ final class CatchupHlsRecovery {
                 try {
                     return upstream.open(dataSpec);
                 } catch (IOException error) {
-                    // Only use in-place retries after the media playlist has
-                    // demonstrably advanced. Static/final VOD playlists retain
-                    // their existing source-level recovery behavior.
-                    if (!isNotFound(error) || retryIndex >= RETRY_DELAYS_MS.length
-                            || !controller.isAdvancingPlaylist()
-                            || !controller.requestPlaylistRefresh()) {
+                    // A segment may return 404 before the next playlist update is
+                    // visible to us. Ask the tracker to reload on every 404, even
+                    // when advancement has not yet been observed, then retry the
+                    // same segment while the player can consume its existing buffer.
+                    if (!isNotFound(error) || retryIndex >= RETRY_DELAYS_MS.length) {
                         throw error;
                     }
+                    boolean refreshRequested = controller.requestPlaylistRefresh();
+                    Log.d(TAG, "Segment returned 404; retry " + (retryIndex + 1)
+                            + "/" + RETRY_DELAYS_MS.length
+                            + ", playlist refresh requested=" + refreshRequested);
 
                     try {
                         upstream.close();
