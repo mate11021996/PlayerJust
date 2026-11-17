@@ -1201,17 +1201,23 @@ public class PlayerActivity extends Activity {
                 .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this, extractorsFactory));
 
-        if (haveMedia && isNetworkUri) {
-            if (mPrefs.mediaUri.getScheme().toLowerCase().startsWith("http")) {
-                HashMap<String, String> headers = new HashMap<>();
-                String userInfo = mPrefs.mediaUri.getUserInfo();
-                if (userInfo != null && userInfo.length() > 0 && userInfo.contains(":")) {
-                    headers.put("Authorization", "Basic " + Base64.encodeToString(userInfo.getBytes(), Base64.NO_WRAP));
-                    DefaultHttpDataSource.Factory defaultHttpDataSourceFactory = new DefaultHttpDataSource.Factory();
-                    defaultHttpDataSourceFactory.setDefaultRequestProperties(headers);
-                    playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(defaultHttpDataSourceFactory, extractorsFactory));
-                }
+        if (haveMedia && isNetworkUri
+                && mPrefs.mediaUri.getScheme() != null
+                && mPrefs.mediaUri.getScheme().toLowerCase(Locale.ROOT).startsWith("http")) {
+            HashMap<String, String> headers = new HashMap<>();
+            String userInfo = mPrefs.mediaUri.getUserInfo();
+            if (userInfo != null && userInfo.length() > 0 && userInfo.contains(":")) {
+                headers.put("Authorization", "Basic " + Base64.encodeToString(userInfo.getBytes(), Base64.NO_WRAP));
             }
+            DefaultHttpDataSource.Factory httpDataSourceFactory = new DefaultHttpDataSource.Factory();
+            if (!headers.isEmpty()) {
+                httpDataSourceFactory.setDefaultRequestProperties(headers);
+            }
+            // Inspect Stalker playlists, but pass ordinary live playlists through unchanged.
+            playerBuilder.setMediaSourceFactory(new DefaultMediaSourceFactory(
+                    new GrowingHlsDataSource.Factory(httpDataSourceFactory,
+                            isLikelyCatchupUrl(), isLikelyStalkerHlsUrl()),
+                    extractorsFactory));
         }
 
         player = playerBuilder.build();
@@ -1262,9 +1268,16 @@ public class PlayerActivity extends Activity {
             }
             updatebuttonAspectRatioIcon();
 
+            Uri playbackUri = getPlaybackUri();
             MediaItem.Builder mediaItemBuilder = new MediaItem.Builder()
-                    .setUri(mPrefs.mediaUri)
-                    .setMimeType(mPrefs.mediaType);
+                    .setUri(playbackUri)
+                    .setMimeType(isPhpTimeshiftUrl() ? MimeTypes.APPLICATION_M3U8 : mPrefs.mediaType);
+            if (isLikelyCatchupUrl()) {
+                // Keep catch-up playback at the beginning of the growing EVENT playlist.
+                mediaItemBuilder.setLiveConfiguration(new MediaItem.LiveConfiguration.Builder()
+                        .setTargetOffsetMs(7L * 24L * 60L * 60L * 1000L)
+                        .build());
+            }
             String title;
             if (apiTitle != null) {
                 title = apiTitle;
@@ -1393,6 +1406,88 @@ public class PlayerActivity extends Activity {
         }
         titleView.setVisibility(View.GONE);
         updateButtons(false);
+    }
+
+    /**
+     * Xtream-compatible panels expose PHP timeshift as HLS when extension=m3u8
+     * is supplied. The stored URI is left unchanged.
+     */
+    private boolean isPhpTimeshiftUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null) return false;
+        String path = mPrefs.mediaUri.getPath();
+        return path != null && path.toLowerCase(Locale.ROOT).endsWith("/timeshift.php")
+                && mPrefs.mediaUri.getQueryParameter("username") != null
+                && mPrefs.mediaUri.getQueryParameter("password") != null
+                && mPrefs.mediaUri.getQueryParameter("stream") != null
+                && mPrefs.mediaUri.getQueryParameter("start") != null
+                && mPrefs.mediaUri.getQueryParameter("duration") != null;
+    }
+
+    private Uri getPlaybackUri() {
+        Uri original = mPrefs.mediaUri;
+        if (!isPhpTimeshiftUrl()) return original;
+        String extension = original.getQueryParameter("extension");
+        if (extension != null && !extension.isEmpty()) return original;
+        return original.buildUpon().appendQueryParameter("extension", "m3u8").build();
+    }
+
+    private boolean isLikelyCatchupUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null
+                || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
+
+        Uri uri = mPrefs.mediaUri;
+        String url = uri.toString().toLowerCase(Locale.ROOT);
+        String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+
+        if (url.contains("timeshift") || url.contains("catchup")
+                || url.contains("catch-up") || url.contains("archive")
+                || url.contains("playback") || path.contains("/timeshift/")
+                || path.contains("/archive/")) {
+            return true;
+        }
+
+        String[] catchupKeys = {"start", "utc", "lutc", "duration",
+                "archive", "timeshift", "catchup", "shift"};
+        for (String key : catchupKeys) {
+            if (uri.getQueryParameter(key) != null) return true;
+        }
+
+        String command = uri.getQueryParameter("cmd");
+        if (command != null) {
+            String decodedCommand = command.toLowerCase(Locale.ROOT);
+            if (decodedCommand.contains("timeshift") || decodedCommand.contains("archive")
+                    || decodedCommand.contains("catchup") || decodedCommand.contains("utc=")
+                    || decodedCommand.contains("lutc=") || decodedCommand.contains("start=")
+                    || decodedCommand.contains("duration=")) {
+                return true;
+            }
+        }
+
+        String lastSegment = path.substring(path.lastIndexOf('/') + 1);
+        // A standalone real_id is intentionally not treated as catch-up.
+        return lastSegment.matches(".*index[-_][0-9]{8,}[-_][0-9]+\\.m3u8");
+    }
+
+    /**
+     * Identify Stalker Portal HLS URLs. The data source verifies the response
+     * content before it inspects or rewrites any playlist.
+     */
+    private boolean isLikelyStalkerHlsUrl() {
+        if (mPrefs == null || mPrefs.mediaUri == null
+                || !Utils.isSupportedNetworkUri(mPrefs.mediaUri)) return false;
+        Uri uri = mPrefs.mediaUri;
+        String url = uri.toString().toLowerCase(Locale.ROOT);
+        String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+        return path.contains("stalker_portal")
+                || path.endsWith("/play/live.php")
+                || path.endsWith("/play/timeshift.php")
+                || path.endsWith("/timeshift.php")
+                || "m3u8".equalsIgnoreCase(uri.getQueryParameter("extension"))
+                || uri.getQueryParameter("mac") != null
+                || uri.getQueryParameter("stb") != null
+                || (uri.getQueryParameter("type") != null
+                    && uri.getQueryParameter("action") != null)
+                || url.contains("real_id=");
     }
 
     private class PlayerListener implements Player.Listener {
