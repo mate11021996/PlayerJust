@@ -1555,6 +1555,13 @@ public class PlayerActivity extends Activity {
         @SuppressLint("SourceLockedOrientationActivity")
         @Override
         public void onPlaybackStateChanged(int state) {
+            // A catch-up recovery can show the loading indicator after initial startup.
+            // Clear it whenever Media3 reaches READY again, not only during first load,
+            // so the Play/Pause control is restored after an in-place recovery.
+            if (state == Player.STATE_READY) {
+                updateLoading(false);
+            }
+
             boolean isNearEnd = false;
             final long duration = player.getDuration();
             if (duration != C.TIME_UNSET) {
