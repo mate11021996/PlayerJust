@@ -1555,6 +1555,12 @@ public class PlayerActivity extends Activity {
         @SuppressLint("SourceLockedOrientationActivity")
         @Override
         public void onPlaybackStateChanged(int state) {
+            // Clear the buffering overlay whenever Media3 becomes ready again.
+            // This also restores the Play/Pause control after catch-up HLS recovery.
+            if (state == Player.STATE_READY) {
+                updateLoading(false);
+            }
+
             boolean isNearEnd = false;
             final long duration = player.getDuration();
             if (duration != C.TIME_UNSET) {
