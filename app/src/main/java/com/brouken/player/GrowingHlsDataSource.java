@@ -1,6 +1,7 @@
 package com.brouken.player;
 
 import android.net.Uri;
+import android.util.Log;
 
 import androidx.media3.common.C;
 import androidx.media3.datasource.DataSource;
@@ -24,6 +25,59 @@ import java.util.Map;
  * timeline as the server appends segments. Segment requests remain untouched.
  */
 final class GrowingHlsDataSource implements DataSource {
+    private static final String TAG = "GrowingHlsDataSource";
+
+    private static String safePath(String value) {
+        if (value == null || value.isEmpty()) return "";
+        Uri uri = Uri.parse(value);
+        return (uri.getHost() == null ? "" : uri.getHost()) + (uri.getPath() == null ? "" : uri.getPath());
+    }
+
+    private static void logPlaylistShape(String body, Uri requestUri, Uri responseUri,
+                                         boolean rewritten) {
+        long mediaSequence = 0L;
+        long targetDuration = -1L;
+        int segmentCount = 0;
+        double totalDuration = 0.0;
+        double pendingDuration = -1.0;
+        String firstSegment = "";
+        String lastSegment = "";
+        String playlistType = "unspecified";
+        boolean endList = false;
+
+        String[] lines = body.split("\\r?\\n");
+        for (String line : lines) {
+            if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
+                try { mediaSequence = Long.parseLong(line.substring(line.indexOf(':') + 1).trim()); }
+                catch (NumberFormatException ignored) { }
+            } else if (line.startsWith("#EXT-X-TARGETDURATION:")) {
+                try { targetDuration = Long.parseLong(line.substring(line.indexOf(':') + 1).trim()); }
+                catch (NumberFormatException ignored) { }
+            } else if (line.startsWith("#EXT-X-PLAYLIST-TYPE:")) {
+                playlistType = line.substring(line.indexOf(':') + 1).trim();
+            } else if (line.startsWith("#EXT-X-ENDLIST")) {
+                endList = true;
+            } else if (line.startsWith("#EXTINF:")) {
+                int comma = line.indexOf(',');
+                String value = line.substring("#EXTINF:".length(), comma >= 0 ? comma : line.length()).trim();
+                try { pendingDuration = Double.parseDouble(value); }
+                catch (NumberFormatException ignored) { pendingDuration = -1.0; }
+            } else if (!line.isEmpty() && !line.startsWith("#") && pendingDuration >= 0.0) {
+                if (segmentCount == 0) firstSegment = safePath(line.trim());
+                lastSegment = safePath(line.trim());
+                segmentCount++;
+                totalDuration += pendingDuration;
+                pendingDuration = -1.0;
+            }
+        }
+
+        Log.d(TAG, "Playlist shape: request=" + safePath(requestUri == null ? null : requestUri.toString())
+                + ", response=" + safePath(responseUri == null ? null : responseUri.toString())
+                + ", type=" + playlistType + ", endList=" + endList
+                + ", mediaSequence=" + mediaSequence + ", targetDuration=" + targetDuration
+                + ", segments=" + segmentCount + ", durationSec=" + String.format(java.util.Locale.US, "%.2f", totalDuration)
+                + ", first=" + firstSegment + ", last=" + lastSegment + ", rewritten=" + rewritten);
+    }
     private final DataSource upstream;
     private final boolean rewritePlaylists;
     private final boolean detectStalkerCatchupPlaylist;
@@ -116,6 +170,8 @@ final class GrowingHlsDataSource implements DataSource {
             boolean stalkerCatchupPlaylist = detectStalkerCatchupPlaylist
                     && body.contains("#EXT-X-PLAYLIST-TYPE:VOD")
                     && body.contains("#EXT-X-ENDLIST");
+            boolean willRewrite = rewritePlaylists || stalkerCatchupPlaylist;
+            logPlaylistShape(body, dataSpec.uri, upstream.getUri(), willRewrite);
             if (!rewritePlaylists && !stalkerCatchupPlaylist) {
                 playlist = output.toByteArray();
             } else {
