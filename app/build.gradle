@@ -9,11 +9,11 @@ android {
 
     defaultConfig {
         def abiFilter = project.findProperty("abiFilter")
-        applicationId "com.brouken.player"
+        applicationId "com.brouken.player2"
         minSdkVersion 21
         targetSdkVersion 34
-        versionCode 189
-        versionName "0.${versionCode}"
+        versionCode 1
+        versionName "1.0"
         archivesBaseName = "Just.Player.v${versionName}"
         if (abiFilter) {
             def abiCodeMap = ["x86": 1, "x86_64": 2, "armeabi-v7a": 3, "arm64-v8a": 4]
