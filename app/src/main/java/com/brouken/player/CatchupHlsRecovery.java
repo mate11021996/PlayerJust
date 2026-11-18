@@ -117,18 +117,27 @@ final class CatchupHlsRecovery {
         private final Map<String, PlaylistSnapshot> playlistSnapshots = new HashMap<>();
         // Refresh the catch-up playlist independently of segment loading. This keeps
         // Media3's growing EVENT timeline current while the renderer plays buffered media.
-        private final ScheduledExecutorService backgroundRefreshExecutor =
+        // Playlist refresh and segment prefetch must not share a worker: a slow segment
+        // download must never delay refreshing the live EVENT playlist.
+        private final ScheduledExecutorService playlistRefreshExecutor =
                 Executors.newSingleThreadScheduledExecutor(runnable -> {
                     Thread thread = new Thread(runnable, "CatchupHlsPlaylistRefresh");
                     thread.setDaemon(true);
                     return thread;
                 });
+        private final ScheduledExecutorService segmentPrefetchExecutor =
+                Executors.newSingleThreadScheduledExecutor(runnable -> {
+                    Thread thread = new Thread(runnable, "CatchupHlsSegmentPrefetch");
+                    thread.setDaemon(true);
+                    return thread;
+                });
         private final AtomicBoolean backgroundRefreshStarted = new AtomicBoolean(false);
         private final AtomicBoolean backgroundRefreshInProgress = new AtomicBoolean(false);
+        // Keep at most one complete segment in memory.
         private final LinkedHashMap<String, byte[]> prefetchedSegments = new LinkedHashMap<>();
         private final Set<String> segmentsBeingPrefetched = new HashSet<>();
         private long prefetchedBytes;
-        private static final long MAX_PREFETCH_BYTES = 24L * 1024L * 1024L;
+        private static final long MAX_PREFETCH_BYTES = 12L * 1024L * 1024L;
         private volatile long lastBackgroundRefreshMs;
         private volatile long backgroundRefreshIntervalMs = 3000L;
 
@@ -226,7 +235,7 @@ final class CatchupHlsRecovery {
 
         private void startBackgroundRefresh() {
             if (!backgroundRefreshStarted.compareAndSet(false, true)) return;
-            backgroundRefreshExecutor.scheduleWithFixedDelay(() -> {
+            playlistRefreshExecutor.scheduleWithFixedDelay(() -> {
                 Uri requestUri = activePlaylistRequestUri;
                 long now = android.os.SystemClock.elapsedRealtime();
                 if (requestUri == null
@@ -260,25 +269,39 @@ final class CatchupHlsRecovery {
         void prefetchFollowingSegments(long currentSequence) {
             Uri playlistUri = activePlaylistUri;
             if (playlistUri == null || currentSequence < 0) return;
+
+            Uri nextSegment = null;
             PlaylistSnapshot snapshot;
             synchronized (this) {
                 snapshot = playlistSnapshots.get(playlistUri.toString());
-            }
-            if (snapshot == null) return;
-            int queued = 0;
-            for (Map.Entry<Long, Uri> entry : snapshot.segmentsBySequence.entrySet()) {
-                if (entry.getKey() <= currentSequence || queued >= 2) continue;
-                Uri segmentUri = entry.getValue();
-                String key = segmentUri.toString();
-                synchronized (this) {
-                    if (prefetchedSegments.containsKey(key) || segmentsBeingPrefetched.contains(key)) {
-                        continue;
+                if (snapshot == null) return;
+
+                // Select exactly one segment: the first sequence after the segment
+                // currently being opened/consumed. Never queue a second segment.
+                for (Map.Entry<Long, Uri> entry : snapshot.segmentsBySequence.entrySet()) {
+                    if (entry.getKey() > currentSequence) {
+                        nextSegment = entry.getValue();
+                        break;
                     }
-                    segmentsBeingPrefetched.add(key);
                 }
-                queued++;
-                backgroundRefreshExecutor.execute(() -> prefetchSegment(segmentUri));
+                if (nextSegment == null) return;
+
+                String key = nextSegment.toString();
+                if (prefetchedSegments.containsKey(key) || segmentsBeingPrefetched.contains(key)) {
+                    return;
+                }
+                // Drop a stale cached segment (for example after a seek) so it cannot
+                // occupy the single prefetch slot indefinitely.
+                prefetchedSegments.clear();
+                prefetchedBytes = 0L;
+
+                // Do not run two downloads concurrently, even if the playlist advances.
+                if (!segmentsBeingPrefetched.isEmpty()) return;
+                segmentsBeingPrefetched.add(key);
             }
+
+            Uri segmentToPrefetch = nextSegment;
+            segmentPrefetchExecutor.execute(() -> prefetchSegment(segmentToPrefetch));
         }
 
         private void prefetchSegment(Uri segmentUri) {
