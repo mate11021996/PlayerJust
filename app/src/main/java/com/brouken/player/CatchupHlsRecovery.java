@@ -26,6 +26,10 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Retries transient catch-up HLS segment 404 responses while asking Media3's
@@ -109,6 +113,18 @@ final class CatchupHlsRecovery {
         private volatile Uri activePlaylistRequestUri;
         private volatile Uri activePlaylistUri;
         private final Map<String, PlaylistSnapshot> playlistSnapshots = new HashMap<>();
+        // Refresh the catch-up playlist independently of segment loading. This keeps
+        // Media3's growing EVENT timeline current while the renderer plays buffered media.
+        private final ScheduledExecutorService backgroundRefreshExecutor =
+                Executors.newSingleThreadScheduledExecutor(runnable -> {
+                    Thread thread = new Thread(runnable, "CatchupHlsPlaylistRefresh");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        private final AtomicBoolean backgroundRefreshStarted = new AtomicBoolean(false);
+        private final AtomicBoolean backgroundRefreshInProgress = new AtomicBoolean(false);
+        private volatile long lastBackgroundRefreshMs;
+        private volatile long backgroundRefreshIntervalMs = 3000L;
 
         private static final class PlaylistSnapshot {
             final long version;
@@ -139,6 +155,20 @@ final class CatchupHlsRecovery {
             }
 
             long mediaSequence = 0L;
+            java.util.regex.Matcher targetMatcher = java.util.regex.Pattern
+                    .compile("(?m)^#EXT-X-TARGETDURATION:(\\d+)")
+                    .matcher(body);
+            if (targetMatcher.find()) {
+                try {
+                    long targetSeconds = Long.parseLong(targetMatcher.group(1));
+                    // Poll at roughly half the advertised interval, but avoid aggressive
+                    // requests against portals that publish long HLS segments.
+                    backgroundRefreshIntervalMs = Math.max(2000L,
+                            Math.min(10000L, targetSeconds * 500L));
+                } catch (NumberFormatException ignored) {
+                    // Keep the conservative default interval.
+                }
+            }
             java.util.regex.Matcher sequenceMatcher = java.util.regex.Pattern
                     .compile("(?m)^#EXT-X-MEDIA-SEQUENCE:(\\d+)")
                     .matcher(body);
@@ -174,7 +204,9 @@ final class CatchupHlsRecovery {
             activePlaylistUri = uri;
             notifyAll();
             Log.d(TAG, "Playlist loaded: uri=" + safeUri(uri) + ", sequence=" + mediaSequence
-                    + ", segments=" + segments.size() + ", version=" + playlistVersion);
+                    + ", segments=" + segments.size() + ", version=" + playlistVersion
+                    + ", backgroundRefreshIntervalMs=" + backgroundRefreshIntervalMs);
+            startBackgroundRefresh();
         }
 
         synchronized Long findSequenceForSegment(Uri segmentUri) {
@@ -184,6 +216,28 @@ final class CatchupHlsRecovery {
                 if (sequence != null) return sequence;
             }
             return null;
+        }
+
+        private void startBackgroundRefresh() {
+            if (!backgroundRefreshStarted.compareAndSet(false, true)) return;
+            backgroundRefreshExecutor.scheduleWithFixedDelay(() -> {
+                Uri requestUri = activePlaylistRequestUri;
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (requestUri == null
+                        || now - lastBackgroundRefreshMs < backgroundRefreshIntervalMs
+                        || !backgroundRefreshInProgress.compareAndSet(false, true)) {
+                    return;
+                }
+                try {
+                    // This request runs on a dedicated daemon thread. It never pauses
+                    // ExoPlayer or blocks the segment loader / renderer thread.
+                    fetchPlaylistDirectly(activePlaylistUri != null ? activePlaylistUri : requestUri);
+                    lastBackgroundRefreshMs = android.os.SystemClock.elapsedRealtime();
+                } finally {
+                    backgroundRefreshInProgress.set(false);
+                }
+            }, 1L, 1L, TimeUnit.SECONDS);
+            Log.d(TAG, "Background playlist refresh scheduler started");
         }
 
         private static final class SegmentReplacement {
