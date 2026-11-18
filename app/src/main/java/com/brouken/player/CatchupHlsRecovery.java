@@ -23,9 +23,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -123,6 +125,10 @@ final class CatchupHlsRecovery {
                 });
         private final AtomicBoolean backgroundRefreshStarted = new AtomicBoolean(false);
         private final AtomicBoolean backgroundRefreshInProgress = new AtomicBoolean(false);
+        private final LinkedHashMap<String, byte[]> prefetchedSegments = new LinkedHashMap<>();
+        private final Set<String> segmentsBeingPrefetched = new HashSet<>();
+        private long prefetchedBytes;
+        private static final long MAX_PREFETCH_BYTES = 24L * 1024L * 1024L;
         private volatile long lastBackgroundRefreshMs;
         private volatile long backgroundRefreshIntervalMs = 3000L;
 
@@ -238,6 +244,92 @@ final class CatchupHlsRecovery {
                 }
             }, 1L, 1L, TimeUnit.SECONDS);
             Log.d(TAG, "Background playlist refresh scheduler started");
+        }
+
+        synchronized byte[] consumePrefetchedSegment(Uri uri) {
+            if (uri == null) return null;
+            byte[] bytes = prefetchedSegments.remove(uri.toString());
+            if (bytes != null) {
+                prefetchedBytes -= bytes.length;
+                Log.d(TAG, "Using prefetched HLS segment: bytes=" + bytes.length
+                        + ", uri=" + safeUri(uri));
+            }
+            return bytes;
+        }
+
+        void prefetchFollowingSegments(long currentSequence) {
+            Uri playlistUri = activePlaylistUri;
+            if (playlistUri == null || currentSequence < 0) return;
+            PlaylistSnapshot snapshot;
+            synchronized (this) {
+                snapshot = playlistSnapshots.get(playlistUri.toString());
+            }
+            if (snapshot == null) return;
+            int queued = 0;
+            for (Map.Entry<Long, Uri> entry : snapshot.segmentsBySequence.entrySet()) {
+                if (entry.getKey() <= currentSequence || queued >= 2) continue;
+                Uri segmentUri = entry.getValue();
+                String key = segmentUri.toString();
+                synchronized (this) {
+                    if (prefetchedSegments.containsKey(key) || segmentsBeingPrefetched.contains(key)) {
+                        continue;
+                    }
+                    segmentsBeingPrefetched.add(key);
+                }
+                queued++;
+                backgroundRefreshExecutor.execute(() -> prefetchSegment(segmentUri));
+            }
+        }
+
+        private void prefetchSegment(Uri segmentUri) {
+            DataSource.Factory factory = playlistDataSourceFactory;
+            if (factory == null) {
+                synchronized (this) { segmentsBeingPrefetched.remove(segmentUri.toString()); }
+                return;
+            }
+            DataSource source = factory.createDataSource();
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try {
+                source.open(new DataSpec(segmentUri));
+                byte[] buffer = new byte[16 * 1024];
+                int count;
+                while ((count = source.read(buffer, 0, buffer.length)) != C.RESULT_END_OF_INPUT) {
+                    if (count > 0) {
+                        output.write(buffer, 0, count);
+                        if (output.size() > 12 * 1024 * 1024) {
+                            Log.w(TAG, "Prefetch segment exceeded 12 MiB; discarding: " + safeUri(segmentUri));
+                            return;
+                        }
+                    }
+                }
+                byte[] bytes = output.toByteArray();
+                if (bytes.length == 0) return;
+                synchronized (this) {
+                    while (prefetchedBytes + bytes.length > MAX_PREFETCH_BYTES
+                            && !prefetchedSegments.isEmpty()) {
+                        Map.Entry<String, byte[]> eldest =
+                                prefetchedSegments.entrySet().iterator().next();
+                        prefetchedBytes -= eldest.getValue().length;
+                        prefetchedSegments.remove(eldest.getKey());
+                    }
+                    if (bytes.length <= MAX_PREFETCH_BYTES) {
+                        prefetchedSegments.put(segmentUri.toString(), bytes);
+                        prefetchedBytes += bytes.length;
+                    }
+                }
+                Log.d(TAG, "Prefetched next HLS segment: bytes=" + bytes.length
+                        + ", uri=" + safeUri(segmentUri));
+            } catch (IOException error) {
+                Log.d(TAG, "Background segment prefetch failed: " + safeUri(segmentUri)
+                        + ", reason=" + error.getClass().getSimpleName());
+            } finally {
+                synchronized (this) { segmentsBeingPrefetched.remove(segmentUri.toString()); }
+                try {
+                    source.close();
+                } catch (IOException ignored) {
+                    // Ignore close failures after the background request.
+                }
+            }
         }
 
         private static final class SegmentReplacement {
@@ -492,6 +584,9 @@ final class CatchupHlsRecovery {
     private static final class SegmentRetryDataSource implements DataSource {
         private final DataSource upstream;
         private final RecoveryController controller;
+        private byte[] cachedSegment;
+        private int cachedPosition;
+        private Uri cachedUri;
 
         SegmentRetryDataSource(DataSource upstream, RecoveryController controller) {
             this.upstream = upstream;
@@ -509,9 +604,23 @@ final class CatchupHlsRecovery {
             int retryIndex = 0;
             Long segmentSequence = controller.findSequenceForSegment(dataSpec.uri);
             Uri playlistUri = controller.activePlaylistUri;
+            // Consume a fully downloaded segment when available. Only full-segment
+            // requests are eligible; byte-range requests continue through upstream.
+            if (dataSpec.position == 0 && dataSpec.length == C.LENGTH_UNSET) {
+                byte[] prefetched = controller.consumePrefetchedSegment(dataSpec.uri);
+                if (prefetched != null) {
+                    cachedSegment = prefetched;
+                    cachedPosition = 0;
+                    cachedUri = dataSpec.uri;
+                    if (segmentSequence != null) controller.prefetchFollowingSegments(segmentSequence);
+                    return prefetched.length;
+                }
+            }
             while (true) {
                 try {
-                    return upstream.open(currentSpec);
+                    long opened = upstream.open(currentSpec);
+                    if (segmentSequence != null) controller.prefetchFollowingSegments(segmentSequence);
+                    return opened;
                 } catch (IOException error) {
                     if (!isNotFound(error) || retryIndex >= RETRY_DELAYS_MS.length) {
                         throw error;
@@ -569,12 +678,19 @@ final class CatchupHlsRecovery {
 
         @Override
         public int read(byte[] buffer, int offset, int length) throws IOException {
+            if (cachedSegment != null) {
+                if (cachedPosition >= cachedSegment.length) return C.RESULT_END_OF_INPUT;
+                int count = Math.min(length, cachedSegment.length - cachedPosition);
+                System.arraycopy(cachedSegment, cachedPosition, buffer, offset, count);
+                cachedPosition += count;
+                return count;
+            }
             return upstream.read(buffer, offset, length);
         }
 
         @Override
         public Uri getUri() {
-            return upstream.getUri();
+            return cachedUri != null ? cachedUri : upstream.getUri();
         }
 
         @Override
@@ -584,6 +700,9 @@ final class CatchupHlsRecovery {
 
         @Override
         public void close() throws IOException {
+            cachedSegment = null;
+            cachedPosition = 0;
+            cachedUri = null;
             upstream.close();
         }
     }
