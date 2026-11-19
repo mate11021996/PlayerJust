@@ -78,6 +78,7 @@ import androidx.media3.common.Tracks;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlaybackException;
+import androidx.media3.exoplayer.LoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.RenderersFactory;
 import androidx.media3.exoplayer.SeekParameters;
@@ -853,7 +854,7 @@ public class PlayerActivity extends Activity {
                     long seekTo = pos - 10_000;
                     if (seekTo < 0)
                         seekTo = 0;
-                    player.setSeekParameters(SeekParameters.EXACT);
+                    player.setSeekParameters(SeekParameters.PREVIOUS_SYNC);
                     player.seekTo(seekTo);
                     final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
@@ -876,7 +877,7 @@ public class PlayerActivity extends Activity {
                     long seekMax = player.getDuration();
                     if (seekMax != C.TIME_UNSET && seekTo > seekMax)
                         seekTo = seekMax;
-                    player.setSeekParameters(SeekParameters.EXACT);
+                    player.setSeekParameters(SeekParameters.NEXT_SYNC);
                     player.seekTo(seekTo);
                     final String message = Utils.formatMilisSign(seekTo - playerView.keySeekStart) + "\n" + Utils.formatMilis(seekTo);
                     playerView.setCustomErrorMessage(message);
@@ -1204,6 +1205,7 @@ public class PlayerActivity extends Activity {
 
         ExoPlayer.Builder playerBuilder = new ExoPlayer.Builder(this, renderersFactory)
                 .setTrackSelector(trackSelector)
+                .setLoadControl(PatientLoadControl.create(isNetworkUri))
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this, extractorsFactory));
 
         if (haveMedia && isNetworkUri
